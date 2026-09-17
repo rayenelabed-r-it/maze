@@ -170,6 +170,7 @@ def _iter_solver_modules() -> list[str]:
     return [
         "mazes.solvers.recursive_backtracking",
         "mazes.solvers.astar",
+        "mazes.solvers.dijkstra",
     ]
 
 

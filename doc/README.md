@@ -65,9 +65,9 @@ modules et le remplissage des caches ne soient pas comptés dans la première me
 les interruptions du système. La médiane ignore les valeurs aberrantes, la moyenne
 non.
 
-**4. Même labyrinthe pour les deux solveurs.** Comparer le backtracking et A\* sur des
-labyrinthes différents ne mesure rien. La graine doit être fixée à l'intérieur de
-chaque comparaison.
+**4. Même labyrinthe pour tous les solveurs.** Comparer le backtracking, A\* et
+Dijkstra sur des labyrinthes différents ne mesure rien. La graine doit être fixée à
+l'intérieur de chaque comparaison.
 
 ## Comment obtenir les labyrinthes
 
@@ -94,7 +94,7 @@ savent pas d'où vient la grille.
 | [01 — Architecture](01-architecture.md) | organisation du code, où se trouve ta partie |
 | [02 — La grille](02-grille.md) | le modèle 2 bits/cellule, et la lecture ASCII |
 | [03 — Générateurs](03-generateurs.md) | la théorie de Recursive Backtracking et Kruskal |
-| [04 — Solveurs](04-solveurs.md) | la théorie de backtracking et A\*, et le marquage `o` / `*` |
+| [04 — Solveurs](04-solveurs.md) | la théorie de backtracking, A\* et Dijkstra, et le marquage `o` / `*` |
 | [05 — Export](05-export.md) | écrire un labyrinthe en ASCII et en image |
 
 ## Ta partie
@@ -102,7 +102,7 @@ savent pas d'où vient la grille.
 D'après le découpage que tu as donné :
 
 1. **Lecture ASCII** — un fichier `.txt` → une `WallGrid`. Voir `02-grille.md`.
-2. **Deux solveurs** — Recursive Backtracking et A\*. Voir `04-solveurs.md`.
+2. **Trois solveurs** — Recursive Backtracking, A\* et Dijkstra. Voir `04-solveurs.md`.
 3. **Reconstruction du chemin** et **marquage `o` / `*`** — voir `04-solveurs.md`.
 4. **La comparaison** — le tableau et les courbes. Voir ce document.
 

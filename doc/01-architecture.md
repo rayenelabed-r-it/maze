@@ -13,11 +13,13 @@ Amazing-Mazes/
 │   ├── generators/
 │   │   ├── base.py           interface Generator + registre
 │   │   ├── recursive_backtracking.py
-│   │   └── kruskal.py
+│   │   ├── kruskal.py
+│   │   └── prim.py
 │   ├── solvers/              <-- TA PARTIE
 │   │   ├── base.py           interface Solver + SolveResult + registre
 │   │   ├── recursive_backtracking.py
-│   │   └── astar.py
+│   │   ├── astar.py
+│   │   └── dijkstra.py
 │   ├── rendering/
 │   │   ├── ascii.py          <-- TA PARTIE : WallGrid <-> texte
 │   │   ├── image.py          WallGrid <-> image (Pillow)

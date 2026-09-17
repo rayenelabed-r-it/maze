@@ -22,8 +22,9 @@ l'obtenir est dans [`doc/README.md`](doc/README.md).
 | Rôle | Algorithmes | Qui |
 |---|---|---|
 | **Générateurs** | Recursive Backtracking | Angie |
-| **Générateurs** | Kruskal, Prim, dijkstra | Rayene |
+| **Générateurs** | Kruskal, Prim | Rayene |
 | **Solveurs** | Recursive Backtracking, A\* | Manon |
+| **Solveurs** | Dijkstra | Rayene |
 | **Lecture ASCII** | fichier texte → `WallGrid` | Manon |
 
 Générateurs et solveurs passent par la même interface : ajouter un algorithme,
@@ -82,8 +83,8 @@ mazes list
 ```
 
 Affiche les **générateurs** (`kruskal`, `prim`, `recursive_backtracking`) et les
-**solveurs** (`astar`, `recursive_backtracking`), avec leur description et leur
-complexité.
+**solveurs** (`astar`, `dijkstra`, `recursive_backtracking`), avec leur description
+et leur complexité.
 
 ### 1. Générer un labyrinthe
 
@@ -213,5 +214,5 @@ Amazing-Mazes/
 | [01 — Architecture](doc/01-architecture.md) | organisation du code, interfaces |
 | [02 — La grille](doc/02-grille.md) | modèle 2 bits/cellule, lecture ASCII |
 | [03 — Générateurs](doc/03-generateurs.md) | théorie de Recursive Backtracking et Kruskal |
-| [04 — Solveurs](doc/04-solveurs.md) | théorie de backtracking et A\*, marquage `o` / `*` |
+| [04 — Solveurs](doc/04-solveurs.md) | théorie de backtracking, A\* et Dijkstra, marquage `o` / `*` |
 | [05 — Export](doc/05-export.md) | écrire en ASCII et en image |

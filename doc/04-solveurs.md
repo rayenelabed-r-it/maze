@@ -1,20 +1,20 @@
 # 04 — Solveurs
 
-Ta partie. Deux algorithmes de recherche, deux stratégies opposées, un même résultat.
+Ta partie. Trois algorithmes de recherche, trois stratégies, un même résultat.
 
-| | Recursive Backtracking | A\* |
-|---|---|---|
-| Type | exploration non informée | exploration informée |
-| Structure | pile (LIFO) | file de priorité (tas) |
-| Heuristique | aucune | distance de Manhattan |
-| Complexité temps | `O(n²)` | `O(n² log n)` |
-| Complexité mémoire | `O(n²)` | `O(n²)` + le tas |
-| Chemin trouvé | l'unique chemin | l'unique chemin |
+| | Recursive Backtracking | A\* | Dijkstra |
+|---|---|---|---|
+| Type | exploration non informée | exploration informée | exploration non informée |
+| Structure | pile (LIFO) | file de priorité (tas) | file de priorité (tas) |
+| Heuristique | aucune | distance de Manhattan | aucune |
+| Complexité temps | `O(n²)` | `O(n² log n)` | `O(n² log n)` |
+| Complexité mémoire | `O(n²)` | `O(n²)` + le tas | `O(n²)` + le tas |
+| Chemin trouvé | l'unique chemin | l'unique chemin | l'unique chemin |
 
 ## Le chemin est unique
 
 Dans un labyrinthe parfait, il existe **exactement un chemin** entre l'entrée et la
-sortie. Les deux solveurs renvoient donc nécessairement la même liste de cellules.
+sortie. Les trois solveurs renvoient donc nécessairement la même liste de cellules.
 
 Ce qui les distingue n'est pas le **résultat**, mais le **coût** pour y parvenir :
 combien de cellules ont été développées, combien de mémoire a été mobilisée, combien
@@ -341,6 +341,66 @@ cul-de-sac exploré, même si A\* y est passé avant d'y revenir.
 
 ---
 
+## Dijkstra
+
+Dijkstra trouve le plus court chemin dans un graphe **pondéré** : à chaque étape
+il finalise la cellule la plus proche de l'entrée, puis propage les distances
+depuis elle. Aucune heuristique n'oriente la recherche — c'est l'équivalent d'un
+A\* dont `h` vaudrait toujours 0.
+
+### À coût uniforme, c'est un BFS qui paie un tas
+
+Ici tous les couloirs coûtent 1. La file de priorité sort donc les cellules par
+distance croissante, soit exactement l'ordre d'un **parcours en largeur**. Le
+résultat est identique, cellule pour cellule — la vérification le confirme sur
+toutes les tailles.
+
+| | BFS | Dijkstra |
+|---|---|---|
+| Ordre de sortie | distance croissante | distance croissante |
+| Structure | file FIFO | tas binaire |
+| Coût par insertion | `O(1)` | `O(log n²)` |
+| Chemin trouvé | le plus court | le plus court |
+
+La file de priorité est donc ici un **FIFO déguisé**, qui paie `log n²` à chaque
+insertion pour un ordre qu'une simple file donnerait gratuitement. C'est ce que
+le benchmark mesure : le surcoût du tas, à algorithme par ailleurs équivalent.
+
+### Pourquoi le garder
+
+Dijkstra est la **référence aveugle** du projet. Le backtracking explore en
+profondeur, A\* est guidé par son heuristique, Dijkstra n'a aucune information :
+il avance par cercles concentriques autour de l'entrée, sans jamais tenir compte
+de la position de la sortie.
+
+Comparer A\* à Dijkstra isole donc ce que **l'heuristique apporte** : même
+structure de données (un tas), même mécanique, la seule différence est `h`. C'est
+la mesure la plus directe de la valeur de l'information.
+
+> **Nuance à écrire dans le rapport.** Dijkstra ne serait réellement distinct d'un
+> BFS que si les couloirs avaient des **coûts différents** — une case piège à 5,
+> un raccourci à 1. Le BFS donnerait alors le chemin le plus court en *étapes*, et
+> Dijkstra le moins *coûteux*. Cette grille n'expose pas ce cas : les deux
+> algorithmes y sont interchangeables, et le benchmark le montre.
+
+### Structure de données
+
+Mêmes conventions qu'A\* : `distances` et `parents` en `array("i")` (4 octets par
+cellule), `closed` en `bytearray`. `-1` sert de sentinelle « non atteint », car un
+`array("i")` ne stocke pas l'infini.
+
+Comme A\*, Dijkstra n'a pas de « decrease-key » : quand une distance s'améliore,
+on empile une **nouvelle** entrée et on laisse l'ancienne devenir obsolète. Le
+`closed` la rattrape à la sortie du tas. Le tas contient donc des doublons, et
+`max_frontier` compte ces entrées, pas les cellules distinctes.
+
+### Complexité
+
+`O(n² log n)` en temps — chaque cellule sort une fois, et le tas coûte `log n²` —
+et `O(n²)` en mémoire, comme A\*.
+
+---
+
 ## Le marquage `o` / `*`
 
 C'est la sortie demandée par l'énoncé, et la dernière étape de ta partie.
@@ -390,4 +450,4 @@ un ordre d'insertion non maîtrisé ferait varier la mesure d'un run à l'autre 
 rendrait toute comparaison impossible.
 
 **Plusieurs graines.** L'écart-type entre graines atteint 37 % à `n = 200`. Comparer
-backtracking et A\* sur une seule graine ne mesure rien.
+deux solveurs sur une seule graine ne mesure rien.

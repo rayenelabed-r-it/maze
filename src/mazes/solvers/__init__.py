@@ -1,12 +1,13 @@
 """Solveurs de labyrinthes.
 
 Importer ce paquet suffit à peupler le registre : chaque module s'enregistre
-lui-même via ``@register_solver``. Les deux solveurs trouvent le même chemin dans
+lui-même via ``@register_solver``. Les trois solveurs trouvent le même chemin dans
 un labyrinthe parfait (il est unique) ; ils diffèrent par le coût de la recherche.
 """
 
 from mazes.solvers import (  # noqa: F401  (effet de bord : enregistrement)
     astar,
+    dijkstra,
     recursive_backtracking,
 )
 from mazes.solvers.astar import AStarSolver, build_heuristic
@@ -22,6 +23,7 @@ from mazes.solvers.base import (
     register_solver,
     solver_choices,
 )
+from mazes.solvers.dijkstra import DijkstraSolver
 from mazes.solvers.recursive_backtracking import RecursiveBacktrackingSolver
 
 __all__ = [
@@ -30,6 +32,7 @@ __all__ = [
     "SOLVERS",
     "UNVISITED",
     "AStarSolver",
+    "DijkstraSolver",
     "RecursiveBacktrackingSolver",
     "SolveResult",
     "Solver",
