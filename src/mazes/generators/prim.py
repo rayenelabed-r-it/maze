@@ -18,24 +18,24 @@ class PrimGenerator(Generator):
         grid = WallGrid(n)
         visitees = bytearray(n * n)
 
-        depart = (rng.randrange(n), rng.randrange(n))
-        visitees[grid.index(depart)] = 1
-
-        frontiere = [(depart, v) for v in grid.neighbors(depart)]
+        r, c = rng.randrange(n), rng.randrange(n)
+        visitees[grid.index(r, c)] = 1
+        frontiere = [((r, c), (nr, nc), d) for nr, nc, d in grid.iter_neighbors(r, c)]
 
         while frontiere:
-            # tirage au hasard + swap-pop : O(1) au lieu du pop(index) en O(k)
+            # tirage au hasard + swap-pop : O(1) au lieu du pop(index) en O(k).
             i = rng.randrange(len(frontiere))
             frontiere[i], frontiere[-1] = frontiere[-1], frontiere[i]
-            a, b = frontiere.pop()
+            a, b, d = frontiere.pop()
 
-            if visitees[grid.index(b)]:
+            br, bc = b
+            if visitees[grid.index(br, bc)]:
                 continue  # abattre ce mur créerait un cycle
 
-            visitees[grid.index(b)] = 1
-            grid.carve(a, b)
-            for voisine in grid.neighbors(b):
-                if not visitees[grid.index(voisine)]:
-                    frontiere.append((b, voisine))
+            visitees[grid.index(br, bc)] = 1
+            grid.carve(a[0], a[1], d)
+            for nr, nc, d2 in grid.iter_neighbors(br, bc):
+                if not visitees[grid.index(nr, nc)]:
+                    frontiere.append((b, (nr, nc), d2))
 
         return grid

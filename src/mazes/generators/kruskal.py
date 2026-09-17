@@ -3,7 +3,7 @@ relient deux composantes différentes."""
 
 from __future__ import annotations
 
-from mazes.core.grid import WallGrid
+from mazes.core.grid import EAST, SOUTH, WallGrid
 from mazes.core.rng import RandomSource
 from mazes.core.unionfind import UnionFind
 from mazes.generators.base import Generator, register_generator
@@ -20,22 +20,24 @@ class KruskalGenerator(Generator):
         if n == 1:
             return grid
 
-        # Droite et bas uniquement : chaque paire de voisines apparaît une fois
+        # Droite et bas uniquement : chaque paire de voisines apparaît une fois.
         murs = []
         for r in range(n):
             for c in range(n):
                 if c + 1 < n:
-                    murs.append(((r, c), (r, c + 1)))
+                    murs.append((r, c, EAST))
                 if r + 1 < n:
-                    murs.append(((r, c), (r + 1, c)))
+                    murs.append((r, c, SOUTH))
 
         rng.shuffle(murs)
 
         uf = UnionFind(n * n)
         restants = n * n - 1
-        for a, b in murs:
-            if uf.union(grid.index(a), grid.index(b)):
-                grid.carve(a, b)
+        for r, c, d in murs:
+            a = grid.index(r, c)
+            b = a + 1 if d == EAST else a + n
+            if uf.union(a, b):
+                grid.carve(r, c, d)
                 restants -= 1
                 if restants == 0:
                     break  # l'arbre couvrant est complet, inutile de continuer

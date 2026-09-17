@@ -25,8 +25,7 @@ Amazing-Mazes/
 │   ├── metrics.py            chronométrage et mesure mémoire
 │   └── cli.py                interface en ligne de commande
 ├── tests/                    tests de ta partie
-├── benchmarks/scaling.py     <-- TA PARTIE : le tableau comparatif
-├── tools/maze_stub.py        générateurs de secours, en attendant ta collègue
+├── benchmarks/scaling.py     <-- TA PARTIE : le benchmark, compare les solveurs
 ├── doc/                      cette documentation
 └── outputs/                  fichiers produits (non versionnés)
 ```

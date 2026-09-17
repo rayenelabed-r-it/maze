@@ -1,3 +1,19 @@
+# Dependances de developpement, en plus de requirements.txt.
+# Installation :  pip install -r requirements-dev.txt
+
 -r requirements.txt
-pytest>=8.0
-ruff>=0.5
+
+# Tests.
+pytest>=8.3
+pytest-cov>=6.0
+
+# Courbes d'analyse des algorithmes (temps / memoire en fonction de n).
+matplotlib>=3.9
+
+# Mesure de la memoire residente du processus (RSS) dans les benchmarks.
+# Sans elle, seule la memoire tracee par tracemalloc est disponible, ce qui
+# sous-estime les allocations faites par numpy et Pillow.
+psutil>=5.9
+
+# Lint et formatage.
+ruff>=0.7

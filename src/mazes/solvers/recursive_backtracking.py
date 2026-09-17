@@ -1,72 +1,158 @@
-"""Résolution par retour sur trace (DFS itératif).
+"""Solveur par Recursive Backtracking (exploration en profondeur, pile explicite).
 
-Non optimal : dans un labyrinthe parfait il n'existe qu'un seul chemin
-simple entre deux cellules, donc le chemin trouvé est le bon — mais
-l'algorithme peut explorer une grande partie de la grille avant de le
-trouver. C'est le point de comparaison avec A*.
+La pile **est** le chemin courant : empiler = avancer, dépiler = reculer (et
+marquer ``*``). Pas de table de parents, donc moins de mémoire qu'A*. Pile
+explicite pour éviter la limite de récursion de CPython. Voir ``doc/04-solveurs.md``.
 """
 
 from __future__ import annotations
 
-import time
+from time import perf_counter
+from typing import TYPE_CHECKING
 
-from mazes.core.grid import Cell, WallGrid
-from mazes.solvers.base import EXPLORED, SolveResult, Solver, register_solver
+from mazes.core.grid import DELTA_COL, DELTA_ROW, DIRECTIONS, EAST, SOUTH, WEST
+from mazes.core.rng import RandomSource
+from mazes.solvers.base import (
+    EXPLORED,
+    ON_PATH,
+    UNVISITED,
+    Solver,
+    SolveResult,
+    register_solver,
+)
+
+if TYPE_CHECKING:  # pragma: no cover
+    from mazes.core.grid import WallGrid
+
+Cell = tuple[int, int]
 
 
 @register_solver
 class RecursiveBacktrackingSolver(Solver):
+    """Exploration en profondeur avec pile explicite (la pile est le chemin)."""
+
     name = "recursive_backtracking"
-    description = "Retour sur trace en profondeur (pile explicite)"
-    complexity = "O(n²)"
-    optimal = False
+    description = "Exploration en profondeur avec pile explicite (la pile est le chemin)."
+    complexity = "O(n^2) temps, O(n^2) memoire"
+    optimal = True
+
+    def __init__(self, neighbor_order: str = "fixed", seed: int | None = None) -> None:
+        """Configure l'ordre d'examen des voisins (``"fixed"`` ou ``"shuffled"``)."""
+        if neighbor_order not in ("fixed", "shuffled"):
+            raise ValueError(f"neighbor_order inconnu : {neighbor_order!r}")
+        self.neighbor_order = neighbor_order
+        # La source aléatoire n'existe qu'en mode mélangé.
+        self._rng = RandomSource(seed) if neighbor_order == "shuffled" else None
 
     def solve(self, grid: WallGrid, start: Cell, goal: Cell) -> SolveResult:
-        debut = time.perf_counter()
-        n2 = grid.n * grid.n
+        """Résout par backtracking : ``state`` sert aussi de marque de visite.
 
-        state = bytearray(n2)
-        visitees = bytearray(n2)
-        visitees[grid.index(start)] = 1
-        state[grid.index(start)] = EXPLORED
+        La pile contient exactement le chemin quand on atteint la sortie. Chaque
+        cellule est empilée puis dépilée au plus une fois : complexité ``O(n²)``.
+        """
+        self._require_endpoints(grid, start, goal)
 
-        pile: list[Cell] = [start]
-        expanded = 0
-        explored = 1
+        debut = perf_counter()
+        n = grid.n
+
+        # Le masque sert AUSSI de marque de visite : UNVISITED -> non empilé.
+        state = bytearray(n * n)
+
+        depart = start[0] * n + start[1]
+        arrivee = goal[0] * n + goal[1]
+
+        stack = [depart]
+        state[depart] = ON_PATH
+
+        expanded = 1
         max_frontier = 1
-        trouve = start == goal
 
-        while pile and not trouve:
-            max_frontier = max(max_frontier, len(pile))
-            cellule = pile[-1]
-            suivante = None
-            for voisine in grid.accessible(cellule):
-                if not visitees[grid.index(voisine)]:
-                    suivante = voisine
-                    break
+        while stack:
+            # Regarder le sommet sans le retirer : distinguer avancer/reculer.
+            index = stack[-1]
+            if index == arrivee:
+                break
 
-            if suivante is None:
-                pile.pop()  # cul-de-sac
-                continue
+            r, c = divmod(index, n)
+            suivant = self._next_unvisited(grid, state, r, c, index)
 
-            expanded += 1
-            explored += 1
-            visitees[grid.index(suivante)] = 1
-            state[grid.index(suivante)] = EXPLORED
-            pile.append(suivante)
-            if suivante == goal:
-                trouve = True
+            if suivant >= 0:
+                state[suivant] = ON_PATH
+                stack.append(suivant)
+                expanded += 1
+                if len(stack) > max_frontier:
+                    max_frontier = len(stack)
+            else:
+                stack.pop()
+                state[index] = EXPLORED
 
-        chemin = list(pile) if trouve else []
-        if chemin:
-            self._mark(grid, state, chemin)
+        if not stack:
+            # Sortie jamais atteinte (grille invalide) : résultat vide.
+            return SolveResult(
+                path=[],
+                state=state,
+                expanded=expanded,
+                explored=expanded,
+                max_frontier=max_frontier,
+                elapsed_s=perf_counter() - debut,
+                algorithm=self.name,
+            )
+
+        # La pile contient exactement le chemin, du départ vers l'arrivée.
+        chemin = [divmod(i, n) for i in stack]
 
         return SolveResult(
             path=chemin,
             state=state,
             expanded=expanded,
-            explored=explored,
+            explored=expanded,  # le backtracking ne revoit jamais une cellule
             max_frontier=max_frontier,
-            elapsed_s=time.perf_counter() - debut,
+            elapsed_s=perf_counter() - debut,
             algorithm=self.name,
         )
+
+    def _next_unvisited(
+        self, grid: WallGrid, state: bytearray, r: int, c: int, index: int
+    ) -> int:
+        """Index linéaire d'un voisin accessible non visité, ou ``-1``.
+
+        Le test de bornes précède la lecture du mur. Le mur à lire dépend de la
+        direction : Ouest -> mur Est du voisin, Nord -> mur Sud du voisin.
+        """
+        n = grid.n
+        east = grid.east
+        south = grid.south
+
+        if self._rng is None:
+            ordre = DIRECTIONS
+        else:
+            ordre = list(DIRECTIONS)
+            self._rng.python.shuffle(ordre)
+
+        for d in ordre:
+            nr = r + DELTA_ROW[d]
+            nc = c + DELTA_COL[d]
+            if not (0 <= nr < n and 0 <= nc < n):
+                continue
+
+            voisin = nr * n + nc
+            if state[voisin] != UNVISITED:
+                continue
+
+            if d == EAST:
+                i = index
+                masque = east
+            elif d == WEST:
+                i = voisin  # le mur Ouest de (r, c) est le mur Est de (r, c-1)
+                masque = east
+            elif d == SOUTH:
+                i = index
+                masque = south
+            else:  # NORTH : le mur Nord de (r, c) est le mur Sud de (r-1, c)
+                i = voisin
+                masque = south
+
+            if not (masque[i >> 3] >> (i & 7)) & 1:
+                return voisin
+
+        return -1

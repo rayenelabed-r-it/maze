@@ -22,21 +22,23 @@ class RecursiveBacktrackingGenerator(Generator):
         grid = WallGrid(n)
         visitees = bytearray(n * n)
 
-        depart = (rng.randrange(n), rng.randrange(n))
-        visitees[grid.index(depart)] = 1
-        pile = [depart]
+        r, c = rng.randrange(n), rng.randrange(n)
+        visitees[grid.index(r, c)] = 1
+        pile = [(r, c)]
 
         while pile:
-            cellule = pile[-1]
+            r, c = pile[-1]
             candidats = [
-                v for v in grid.neighbors(cellule) if not visitees[grid.index(v)]
+                (nr, nc, d)
+                for nr, nc, d in grid.iter_neighbors(r, c)
+                if not visitees[grid.index(nr, nc)]
             ]
             if not candidats:
                 pile.pop()  # cul-de-sac : on revient sur nos pas
                 continue
-            voisine = rng.choice(candidats)
-            grid.carve(cellule, voisine)
-            visitees[grid.index(voisine)] = 1
-            pile.append(voisine)
+            nr, nc, d = rng.choice(candidats)
+            grid.carve(r, c, d)
+            visitees[grid.index(nr, nc)] = 1
+            pile.append((nr, nc))
 
         return grid

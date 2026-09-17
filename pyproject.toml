@@ -5,21 +5,58 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "amazing-mazes"
 version = "0.1.0"
-description = "Génération et résolution de labyrinthes parfaits"
+description = "Generation et resolution de labyrinthes parfaits : Recursive Backtracking, Kruskal, A*."
 readme = "README.md"
-requires-python = ">=3.10"
-dependencies = ["pillow>=10.0"]
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0,<3.0",
+    "Pillow>=10.4",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "matplotlib>=3.9",
+    "ruff>=0.7",
+]
 
 [project.scripts]
 mazes = "mazes.cli:main"
 
+# Layout "src" : le code vit dans src/mazes/, les tests dans tests/.
+# Permet un `pip install -e .` propre et evite les imports accidentels
+# depuis la racine du depot.
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["mazes*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+pythonpath = ["src"]
+addopts = "-q --strict-markers"
+markers = [
+    "slow: tests longs (grandes tailles), desactives par defaut avec -m 'not slow'",
+]
 
 [tool.ruff]
 line-length = 100
-src = ["src", "tests", "benchmarks"]
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Dans les tests, un import peut sembler inutilise alors qu'il sert a une
+# assertion parametree ou a un fixture declare ailleurs. Exiger leur suppression
+# obligerait a les reintroduire au fil de l'ecriture des tests, sans rien
+# garantir de plus : la suite de tests echouerait de toute facon si un nom
+# manquait.
+"tests/*" = ["F401", "F811"]
+
+[tool.coverage.run]
+source = ["mazes"]
+branch = true

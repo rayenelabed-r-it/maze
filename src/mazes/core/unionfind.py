@@ -9,7 +9,7 @@ from __future__ import annotations
 
 
 class UnionFind:
-    __slots__ = ("_parent", "_rank", "_groups")
+    __slots__ = ("_groups", "_parent", "_rank")
 
     def __init__(self, size: int) -> None:
         self._parent = list(range(size))
