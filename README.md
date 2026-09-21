@@ -47,19 +47,39 @@ La grille ASCII fait `(2n+1) × (2n+1)` caractères :
 
 | `n` | Grille ASCII | Fichier | Réalisable ? |
 |---:|---:|---:|:---|
-| 1 000 | 2 001 × 2 001 | ~4 Mo | oui |
-| 10 000 | 20 001 × 20 001 | ~400 Mo | oui, lent |
-| 100 000 | 200 001 × 200 001 | ~40 Go | **non** |
+| 1 000 | 2 001 × 2 001 | ~3,8 Mio | oui |
+| 10 000 | 20 001 × 20 001 | ~382 Mio | oui, lent |
+| 100 000 | 200 001 × 200 001 | ~37 Gio | **non** |
 
-Deux verrous : le disque, et le format JPEG (plafonné à 65 535 px de côté).
+Deux verrous à l'export : le disque, et le format JPEG (plafonné à 65 535 px de
+côté). L'architecture y répond en **séparant le stockage du rendu** : le
+labyrinthe vit en mémoire à 2 bits par cellule (`n²/4` octets, soit 2,5 Go à
+`n = 100000`), et l'export est une projection décidée par une `ExportPolicy`.
 
-L'architecture répond en **séparant le stockage du rendu** : le labyrinthe vit en
-mémoire à 2 bits par cellule (`n²/4` octets, soit 2,5 Go à `n = 100000`), et
-l'export est une projection décidée par une `ExportPolicy`.
+**Mais la génération est le vrai verrou, et il est bien plus contraignant.** Le
+stockage de la grille (2,5 Go) n'est qu'une pièce : les algorithmes de génération
+ont besoin de structures bien plus grosses, proportionnelles au *nombre d'arêtes*
+et non au nombre de cellules.
 
-> Deux axes à ne pas confondre. `n = 100000` **passe l'échelle en mémoire** (2,5 Go),
-> mais **pas en temps** : environ `10¹⁰` cellules à parcourir, soit des heures de
-> calcul en Python pur. Voir [`doc/README.md`](doc/README.md).
+| Générateur | Modèle | `n = 1 000` | `n = 100 000` | Plafond sous 2 Gio |
+|---|---|---:|---:|---:|
+| `kruskal` | 230 o/cellule | 230 Mio | **~2,1 Tio** | `n ≈ 3 000` |
+| `recursive_backtracking` | 30 o/cellule | 30 Mio | ~280 Gio | `n ≈ 8 500` |
+| `prim` | 2,5 o/cellule + `O(n)` | 5,5 Mio | ~25 Gio | `n ≈ 28 700` |
+
+Kruskal est de loin le plus gourmand : il construit la liste de **toutes** ses
+arêtes avant d'en abattre une seule, et un tuple Python coûte ~110 octets là où
+un entier `int32` en coûterait 4.
+
+`mazes` ne laisse donc pas le calcul partir : le budget est vérifié **avant toute
+allocation**, et un dépassement est refusé proprement (voir
+[« Refus avant calcul »](#refus-avant-calcul)). À `n = 100000`, aucun générateur
+ne passe sous 2 Gio.
+
+> **`n = 1000000` reste hors de portée**, même sur une machine généreuse : la
+> seule grille y pèse 250 Go, et le plus sobre des générateurs (`prim`) réclame
+> `n²` octets rien que pour marquer ses cellules visitées, soit **1 To**. Le
+> problème n'est pas le code mais la taille du résultat.
 
 ---
 
@@ -117,6 +137,8 @@ Options de `generate` :
 | `--print` | afficher le labyrinthe dans le terminal |
 | `--check` | vérifier que le labyrinthe est parfait avant de l'écrire |
 | `--seed 42` | graine reproductible (génère toujours le même labyrinthe) |
+| `--yes`, `-y` | enregistrer sans demander confirmation |
+| `--stats-only` | n'écrire que le fichier de statistiques |
 
 ### 2. Résoudre un labyrinthe (généré au préalable)
 
@@ -145,6 +167,8 @@ Options de `solve` :
 | `--input labyrinthe.txt` | labyrinthe ASCII à résoudre |
 | `--algorithm astar` | algorithme de résolution |
 | `--output fichier` | choisir le nom de sortie (sans extension) |
+| `--yes`, `-y` | enregistrer sans demander confirmation |
+| `--stats-only` | n'écrire que le fichier de statistiques |
 
 ### 3. Pipeline complet en une commande
 
@@ -158,6 +182,10 @@ Les **deux** algorithmes sont explicites ici : `--generator` choisit l'algorithm
 de génération, `--solver` l'algorithme de résolution. La commande produit les
 mêmes deux fichiers (ASCII + JPEG), nommés `outputs/<générateur>_<solveur>_<n>`.
 
+Au-delà d'un côté de 2 000 caractères (`n ≈ 1000`), un fichier de statistiques
+`<nom>_statistiques.txt` **s'ajoute** à ces deux sorties. Voir
+[« Gros fichiers »](#gros-fichiers--confirmation) ci-dessous.
+
 ### Convertir un labyrinthe ASCII en image
 
 Convertir un fichier ASCII en image **JPEG** :
@@ -165,6 +193,124 @@ Convertir un fichier ASCII en image **JPEG** :
 ```bash
 mazes convert --input outputs/maze_kruskal_30.txt --output outputs/maze_kruskal_30.jpg
 ```
+
+### Refus avant calcul
+
+Un calcul hors budget n'est **pas lancé**. Le budget est vérifié avant la moindre
+allocation, à partir du seul `n` :
+
+```
+$ mazes run --n 100000 --generator kruskal
+Génération refusée : kruskal demanderait 2.1 Tio pour n=100000, au-delà du budget de 2.0 Gio.
+Aucun générateur ne passe a cette taille. Relever MAZES_MEMORY_BUDGET, ou reduire --n.
+statistiques : outputs/kruskal_astar_100000_statistiques.txt
+```
+
+À une taille où un générateur moins gourmand suffit, le message le nomme :
+
+```
+$ mazes run --n 5000 --generator kruskal
+Génération refusée : kruskal demanderait 5.4 Gio pour n=5000, au-delà du budget de 2.0 Gio.
+Essayer un générateur plus sobre : prim, recursive_backtracking. Relever MAZES_MEMORY_BUDGET, ou reduire --n.
+```
+
+La commande sort en **code 1** et écrit un fichier de statistiques à la place —
+sans traceback, et en une fraction de seconde :
+
+```
+labyrinthe_statistiques
+n: 100000
+cellules: 10000000000
+passages: inconnu
+chemin_longueur: inconnu
+generation: refusee
+generation_raison: kruskal demanderait 2.1 Tio pour 10000000000 cellules (budget 2.0 Gio)
+```
+
+`MAZES_MEMORY_BUDGET` relève le plafond, en octets. C'est ce qui permet
+d'exploiter une machine plus large sans toucher au code :
+
+```bash
+MAZES_MEMORY_BUDGET=34359738368 mazes run --n 100000 --generator prim
+```
+
+Ce que chaque générateur atteint, selon le budget :
+
+| Générateur | 2 Gio (défaut) | 32 Gio | 256 Gio |
+|---|---:|---:|---:|
+| `kruskal` | `n ≈ 3 055` | `n ≈ 12 222` | `n ≈ 34 570` |
+| `recursive_backtracking` | `n ≈ 8 460` | `n ≈ 33 842` | `n ≈ 95 721` |
+| `prim` | `n ≈ 28 714` | `n ≈ 116 635` | `n ≈ 330 989` |
+
+Même à 256 Go de budget, `prim` plafonne vers `n ≈ 331 000`. **`n = 1000000`
+demanderait ~2,5 To** : ce n'est pas une limite de code, c'est la taille du
+résultat.
+
+### Résoudre coûte aussi
+
+La génération n'est pas la seule phase à vérifier. Sous 2 Gio, `prim` génère
+jusqu'à `n ≈ 28 714` mais `astar` ne résout que jusqu'à `n ≈ 13 377` : entre les
+deux, la commande générerait pendant des heures pour mourir ensuite dans le
+solveur.
+
+| Solveur | 2 Gio (défaut) | 32 Gio | 256 Gio |
+|---|---:|---:|---:|
+| `astar` | `n ≈ 13 377` | `n ≈ 53 509` | `n ≈ 151 348` |
+| `dijkstra` | `n ≈ 13 377` | `n ≈ 53 509` | `n ≈ 151 348` |
+| `recursive_backtracking` | `n ≈ 37 670` | `n ≈ 151 182` | `n ≈ 427 912` |
+
+`mazes run` vérifie donc **les deux phases avant la moindre allocation** :
+
+```
+$ mazes run --n 20000 --generator prim --solver astar
+Résolution refusée : astar demanderait 4.5 Gio pour n=20000, au-delà du budget de 2.0 Gio.
+Essayer un solveur plus sobre : recursive_backtracking. Relever MAZES_MEMORY_BUDGET, ou reduire --n.
+```
+
+Le message ne propose que des solveurs qui passent réellement : conseiller
+« essayez un autre solveur » quand aucun ne tient serait une impasse de plus.
+
+Le refus de génération sort en **code 1**, contrairement au refus d'export qui
+sort en `0` : dans le second cas le labyrinthe existe et c'est un fichier qui
+manque, dans le premier il n'y a aucun labyrinthe du tout.
+
+### Gros fichiers : confirmation
+
+Un labyrinthe de `n = 100000` produirait un ASCII de **~37 Gio**. `mazes` ne
+l'écrit pas : au-delà de **8 000 caractères de côté**, l'ASCII 1:1 est refusé et
+l'image est réduite pour rester sous la limite JPEG. Et au-delà de **256 Mio**
+estimés, la commande demande son accord :
+
+```
+Le fichier image kruskal_astar_100000.jpg pèsera 350.3 Mio. Souhaites-tu l'enregistrer ? [o/N]
+```
+
+Le défaut est **non** : une touche Entrée accidentelle ne doit pas déclencher
+l'écriture de plusieurs gigaoctets.
+
+La question est posée sur le **terminal de contrôle**, donc `mazes run > log.txt`
+l'affiche quand même ; `echo o | mazes run ...` fonctionne aussi. Sans aucun
+terminal — CI, tâche planifiée, service — la politique s'applique seule : la
+commande ne bloque jamais et ne remplit jamais le disque en silence.
+`MAZES_NO_PROMPT=1` fait taire la question sans changer le reste.
+
+Quand un fichier n'est pas écrit — refus de la politique ou réponse « non » — un
+**fichier de statistiques** `_statistiques.txt` prend le relais, pour que la
+génération laisse une trace :
+
+```
+labyrinthe_statistiques
+n: 100000
+cellules: 10000000000
+passages: 9999999999
+chemin_longueur: 1780000
+export_ascii: refuse
+export_ascii_raison: ASCII 1:1 impossible : la grille ferait 200001 x 200001 caracteres, soit 37.3 Gio (limite 8000 de cote) -- ASCII refuse plutot que reduit
+export_image: reduite x7 -> 28571x28571
+```
+
+Répondre « non » n'est **pas** une erreur : le code de retour reste `0`. Le
+détail du format et de la politique est dans [`doc/05-export.md`](doc/05-export.md).
 
 ### Comparer et analyser les solveurs
 
@@ -196,11 +342,15 @@ Amazing-Mazes/
 │   ├── core/                 WallGrid, Union-Find, aléatoire, validation
 │   ├── generators/           Recursive Backtracking, Kruskal, Prim
 │   ├── solvers/              Recursive Backtracking, A*
-│   ├── rendering/            ASCII, image, politique d'export
+│   ├── rendering/            ASCII, image, politique d'export, statistiques
+│   ├── budget.py             budget mémoire des algorithmes, génération et résolution
+│   ├── interaction.py        confirmation avant d'écrire un gros fichier
 │   ├── metrics.py            chronométrage, mesure mémoire
 │   └── cli.py                ligne de commande
 ├── tests/                    test_solvers.py, test_generators.py, test_cli.py,
-│                             test_lecture_ascii.py, test_rendering.py
+│                             test_lecture_ascii.py, test_rendering.py,
+│                             test_policy.py, test_stats.py, test_interaction.py,
+│                             test_budget.py, test_metrics.py
 ├── benchmarks/scaling.py     le tableau comparatif
 ├── doc/
 └── outputs/                  fichiers produits (non versionnés)

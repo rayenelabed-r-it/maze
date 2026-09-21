@@ -170,17 +170,37 @@ Il y a `2·n·(n-1)` arêtes, soit environ `2n²`. Deux représentations possibl
 
 | Représentation | Coût par arête | À `n = 10 000` |
 |---|---:|---:|
-| tuple `(r, c, r2, c2)` | 72 octets + 8 de pointeur | ~16 Go |
+| tuple `(r, c, sens)` | ~110 octets | ~22 Go |
 | entier `int32` encodé | 4 octets | 800 Mo |
 
-Le tuple Python est un objet : 40 octets d'en-tête plus 8 par élément. Le tableau
-d'entiers est la seule option viable au-delà de `n ≈ 3 000`.
+**Le code livré utilise la liste de tuples**, telle qu'écrite dans
+[`kruskal.py`](../src/mazes/generators/kruskal.py) : c'est la forme la plus
+directe, et la plus lisible.
 
-On numérote donc les arêtes et on les décode à la demande :
+> **Les deux variantes décrites sur cette page ne sont pas implémentées.** Ce
+> document les a longtemps présentées au présent, comme si elles étaient en
+> place — jusqu'à citer un appel à `rng.permuted_indices`, méthode qui n'existe
+> pas dans `core/rng.py`. Les algorithmes de génération sont figés par la
+> consigne : ils ne sont ni réécrits, ni remplacés, ni complétés. La mémoire
+> réelle de Kruskal est donc celle des tuples.
+
+Le coût mesuré est de **~110 octets par arête**, et non 80 : aux 64 octets du
+tuple et 8 du pointeur s'ajoutent les entiers `r` et `c`, que CPython ne met en
+cache qu'en dessous de 257. C'est cette mesure qui alimente le modèle de
+`budget.py`.
+
+**Conséquence directe :** Kruskal plafonne vers `n = 3 055` sous le budget par
+défaut de 2 Gio, quand Prim monte à `n ≈ 28 714`. Le calcul est refusé **avant**
+toute allocation, et un fichier de statistiques est écrit à la place —
+voir [`README`](../README.md#refus-avant-calcul).
+
+#### La variante par tableau d'entiers (non implémentée)
+
+Si les algorithmes devaient être rouverts, voici la piste :
 
 ```python
 m = n * (n - 1)                        # arêtes horizontales
-aretes = rng.permuted_indices(2 * m)   # permutation numpy, int32
+aretes = permutation_aleatoire(2 * m)  # tableau numpy, int32
 
 for e in aretes:
     if e < m:                          # arête horizontale
@@ -195,11 +215,37 @@ for e in aretes:
 `divmod` produit des entiers, qui sont des valeurs et non des références : la boucle
 n'alloue aucun objet.
 
-### Le mode par tirage
+**Le gain est réel, mais bien plus modeste qu'il n'y paraît.** Les arêtes ne sont
+pas le seul poste de dépense. Décomposition mesurée à `n = 1000` :
 
-Au-delà d'une certaine taille, même le tableau d'`int32` devient trop gros
-(80 Go à `n = 100 000`). On peut alors supprimer complètement le tableau et tirer
-les arêtes une par une :
+| Poste | Aujourd'hui | Arêtes en `int32` |
+|---|---:|---:|
+| Arêtes | 169 Mo (85 o/arête) | 8 Mo |
+| Union-Find | 48 Mo | 48 Mo |
+| Grille | 0,25 Mo | 0,25 Mo |
+| **Total** | **217 Mo** | **56 Mo** |
+| **Plafond sous 2 Gio** | **`n ≈ 3 055`** | **`n ≈ 6 200`** |
+
+Le Union-Find coûte **48 octets par cellule** — `list(range(n²))`, donc un objet
+entier par cellule, plus la liste de rangs. Dès que les arêtes deviennent
+compactes, il pèse 85 % du total et prend le relais comme goulot d'étranglement :
+**le plafond double, il ne décuple pas.** C'est le genre d'estimation qu'on ne
+peut faire sérieusement qu'en mesurant poste par poste.
+
+Le compacter lui aussi (`array("i")` au lieu d'une liste) ramènerait le total à
+~16 o/cellule, soit `n ≈ 11 500` — mais il faudrait alors toucher à
+`core/unionfind.py`, une structure partagée avec le reste du projet.
+
+**Décision : ne pas le faire.** Les algorithmes sont figés par la consigne, et
+leurs structures de données en font partie. Un gain de ×2 sur le plafond ne
+justifie pas de sortir du périmètre autorisé — d'autant que `prim`, avec la même
+interface et le même algorithme figé, atteint déjà `n ≈ 28 714`.
+
+### Le mode par tirage (non implémenté)
+
+Au-delà d'une certaine taille, même le tableau d'`int32` deviendrait trop gros
+(80 Go à `n = 100 000`). On pourrait alors supprimer complètement le tableau et
+tirer les arêtes une par une :
 
 ```python
 acceptees = 0
@@ -246,6 +292,76 @@ l'ordre des arêtes est une **permutation aléatoire**, qu'obtenir par un tri pa
 coûte un facteur `log` supplémentaire.
 
 ---
+
+## Budget mémoire
+
+Les trois générateurs n'ont pas du tout le même appétit. `kruskal.py` construit
+la liste de **toutes** ses arêtes avant d'en abattre une seule : à `n = 100000`
+cela fait 20 milliards de tuples, soit ~2 Tio. Partir quand même tue le processus
+en `MemoryError` — après plusieurs minutes, sans message utile et sans rien avoir
+produit.
+
+`budget.py` répond **avant** la moindre allocation, à partir du seul
+`n`. Chaque générateur a son modèle `a·n² + b·n + c`, calé sur des mesures
+`tracemalloc` :
+
+| Générateur | Modèle | Mesures | `n = 1 000` | `n = 100 000` |
+|---|---|---:|---:|---:|
+| `kruskal` | `230·n²` | 208 → 218 o/cellule de `n`=500 à 1200 | 230 Mio | **~2,1 Tio** |
+| `recursive_backtracking` | `30·n²` | 23 → 28 o/cellule | 30 Mio | ~280 Gio |
+| `prim` | `2,5·n² + 3000·n` | 4,4 → 1,9 o/cellule de `n`=500 à 3000 | 5,5 Mio | ~25 Gio |
+
+Trois choses expliquent ces écarts :
+
+* **Kruskal** paie ses arêtes. Le coût par arête croît même avec `n`, parce que
+  les entiers `(r, c)` sortent du cache de CPython au-delà de 257.
+* **Prim** et **recursive_backtracking** ne paient qu'un `bytearray(n*n)`, soit
+  1 octet par cellule. Prim y ajoute une frontière en `O(n)`, qui se dilue
+  quand `n` grandit — d'où un coût par cellule qui *décroît*.
+* **recursive_backtracking** garde en plus sa pile, c'est-à-dire le chemin
+  courant : des tuples de deux entiers, donc ~25 octets par cellule.
+
+**Les modèles majorent les mesures**, volontairement. Surestimer refuse un calcul
+qui aurait tenu — et l'utilisateur peut relever le budget ; sous-estimer tue le
+processus sans rien produire. L'asymétrie justifie le biais. Le test
+`test_budget.py::TestLeModeleMajoreLaMesure` recoupe chaque prédiction contre un
+pic réellement mesuré : si un générateur changeait de structure de données, il
+échouerait.
+
+### Le budget, et comment le relever
+
+`MEMORY_BUDGET` vaut 2 Gio par défaut. `MAZES_MEMORY_BUDGET` le
+remplace, en octets, et il est relu à chaque appel :
+
+```bash
+MAZES_MEMORY_BUDGET=34359738368 mazes run --n 100000 --generator prim
+```
+
+Ce que chaque générateur atteint, selon le budget :
+
+| Générateur | 2 Gio (défaut) | 32 Gio | 256 Gio |
+|---|---:|---:|---:|
+| `kruskal` | `n ≈ 3 055` | `n ≈ 12 222` | `n ≈ 34 570` |
+| `recursive_backtracking` | `n ≈ 8 460` | `n ≈ 33 842` | `n ≈ 95 721` |
+| `prim` | `n ≈ 28 714` | `n ≈ 116 635` | `n ≈ 330 989` |
+
+### Ce qui se passe en cas de dépassement
+
+Le calcul n'est pas lancé. Le CLI refuse, explique, et écrit un fichier de
+statistiques à la place :
+
+```
+Génération refusée : kruskal demanderait 2.1 Tio pour n=100000, au-delà du budget de 2.0 Gio.
+Essayer un autre générateur -- prim est le plus sobre -- ou relever MAZES_MEMORY_BUDGET.
+```
+
+Le code de retour est `1`, et il n'y a **pas de traceback**. Voir
+[`README`](../README.md#refus-avant-calcul) pour le format du fichier écrit.
+
+> **Ce que ce garde-fou ne fait pas.** Il ne rend pas `n = 1000000` possible.
+> Même à 256 Go de budget, `prim` plafonne vers `n ≈ 331 000` : au-delà, c'est la
+> taille du résultat qui dépasse, pas le générateur. La grille seule pèse `n²/4`
+> octets, soit 250 Go à `n = 1000000`.
 
 ## Vérifier un générateur
 

@@ -23,7 +23,10 @@ Amazing-Mazes/
 │   ├── rendering/
 │   │   ├── ascii.py          <-- TA PARTIE : WallGrid <-> texte
 │   │   ├── image.py          WallGrid <-> image (Pillow)
-│   │   └── policy.py         ExportPolicy : que peut-on écrire, à quelle taille
+│   │   ├── policy.py         ExportPolicy : que peut-on écrire, à quelle taille
+│   │   └── stats.py          fichier de statistiques (n, cellules, passages…)
+│   ├── budget.py             budget memoire : peut-on seulement lancer ce calcul ?
+│   ├── interaction.py        confirmation avant d'écrire un gros fichier
 │   ├── metrics.py            chronométrage et mesure mémoire
 │   └── cli.py                interface en ligne de commande
 ├── tests/                    tests de ta partie
@@ -41,11 +44,11 @@ Une seule règle, et elle explique toute l'organisation :
 ```
         cli.py
           │
-    ┌─────┼──────────────┐
-    ▼     ▼              ▼
-rendering  benchmarks  metrics
-    │          │          │
-    └──────────┼──────────┘
+    ┌─────┼───────┬────────┬────────┬─────────┐
+    ▼     ▼       ▼        ▼        ▼         ▼
+rendering benchmarks metrics budget interaction
+    │          │        │        │    (feuilles : ne dépendent
+    └──────────┼────────┴────────┘     d'aucun module)
                ▼
         generators / solvers
                │
@@ -61,6 +64,26 @@ Conséquences concrètes :
   rendu. Ils manipulent seulement `WallGrid`.
 - **`rendering/` ne connaît aucun algorithme.** Il affiche une grille et un masque
   d'état, rien de plus.
+- **`interaction.py` n'importe rien du projet.** Poser une question ne doit
+  dépendre ni du rendu ni des algorithmes -- et ce module touche à `stdin`, donc
+  c'est aussi le plus facile à tester isolément.
+- **`budget.py` n'importe rien du projet.** Il prédit l'empreinte des
+  algorithmes sans les instancier -- générateurs comme solveurs -- ce qui lui
+  permet de rester une feuille. C'est le seul module que `cli.py` consulte
+  *avant* de construire une grille.
+  Il vit à côté de `metrics.py`, et non dans `generators/` : il couvre les deux
+  registres, et `recursive_backtracking` figure dans l'un **et** l'autre avec
+  des empreintes distinctes (30 contre 1,5 o/cellule). Une table unique rangée
+  chez l'un des deux écraserait le modèle de l'autre.
+
+### Une convention qui rend le CLI testable
+
+Les constantes de seuil (`CONFIRM_THRESHOLD_BYTES`, `STATS_ALWAYS_ABOVE`,
+`MAX_ASCII_SIDE`…) sont lues **dans le corps des fonctions**, jamais en valeur par
+défaut d'argument. Une constante en défaut serait liée à l'import : la patcher
+après coup n'aurait plus aucun effet, et vérifier qu'un refus se produit
+demanderait d'écrire des fichiers de plusieurs gigaoctets. Les tests s'appuient
+donc sur `monkeypatch.setattr(module, "CONSTANTE", valeur)`.
 
 `WallGrid` est donc le **carrefour unique** : tous les modules se parlent à travers
 elle, jamais directement. C'est ce qui permet à ton solveur d'accepter indifféremment
@@ -153,7 +176,7 @@ pip install -e .
 
 mazes list                     # algorithmes disponibles
 mazes generate --n 100 --algorithm kruskal
-mazes solve --n 100 --algorithm astar
+mazes solve --input maze.txt --algorithm astar
 mazes convert --input maze.txt --output maze.jpg
 
 pytest                         # tests

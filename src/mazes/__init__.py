@@ -5,7 +5,9 @@ Ce paquet regroupe tout le projet :
 * :mod:`mazes.core`       -- modele memoire compact et structures de base ;
 * :mod:`mazes.generators` -- algorithmes de generation (Recursive Backtracking, Kruskal) ;
 * :mod:`mazes.solvers`    -- algorithmes de resolution (Recursive Backtracking, A*) ;
-* :mod:`mazes.rendering`  -- export ASCII et image, et politique de taille ;
+* :mod:`mazes.rendering`  -- export ASCII et image, politique de taille, statistiques ;
+* :mod:`mazes.budget`     -- budget memoire : refuse un calcul hors de portee ;
+* :mod:`mazes.interaction` -- confirmation avant d'ecrire un gros fichier ;
 * :mod:`mazes.metrics`    -- mesure du temps et de la memoire ;
 * :mod:`mazes.cli`        -- interface en ligne de commande.
 
