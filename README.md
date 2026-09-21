@@ -314,12 +314,32 @@ détail du format et de la politique est dans [`doc/05-export.md`](doc/05-export
 
 ### Comparer et analyser les solveurs
 
-Le benchmark résout tous les labyrinthes déjà générés dans `outputs/` et écrit un
-compte rendu lisible dans `outputs/benchmark.md` :
+Le benchmark analyse tout ce que `outputs/` contient : les labyrinthes, qui sont
+résolus et mesurés, et les fichiers de statistiques, qui sont listés avec le coût
+estimé des tailles refusées. Il écrit `outputs/benchmark.md` et cinq figures.
 
 ```bash
-python benchmarks/scaling.py
+python benchmarks/scaling.py                     # environ 8 min
+python benchmarks/scaling.py --sizes 100 1000    # restreindre les tailles
+python benchmarks/scaling.py --sans-courbes      # rapport seul
 ```
+
+| Figure | Contenu |
+|---|---|
+| `courbes_kruskal.png` | les trois solveurs sur les labyrinthes Kruskal |
+| `courbes_prim.png` | idem, Prim |
+| `courbes_recursive_backtracking.png` | idem, Recursive Backtracking |
+| `courbes_meilleurs.png` | le solveur le plus efficace de chaque générateur |
+
+Chaque figure porte quatre panneaux : le temps et la mémoire, en échelle linéaire
+et en log-log. L'échelle log-log sert à lire les exposants, une loi de puissance
+y devenant une droite.
+
+Le temps et la mémoire sont relevés dans deux passes séparées, parce que
+`tracemalloc` ralentit le code mesuré. « Léger » désigne le pic mémoire réel et
+non `max_frontier` : sur les 11 cas mesurés, les deux critères désignent deux
+solveurs différents. Le détail est dans `outputs/benchmark.md`, section « Écart
+entre la frontière et le pic mémoire ».
 
 ---
 

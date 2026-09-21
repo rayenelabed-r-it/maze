@@ -454,36 +454,36 @@ deux solveurs sur une seule graine ne mesure rien.
 
 ## Budget mémoire
 
-`max_frontier` mesure la mémoire de la **structure d'attente**, mais il ne dit rien
-de l'empreinte totale : les tables auxiliaires pèsent bien plus lourd. À `n = 100000`,
-A\* demande ~112 Gio rien qu'en `array("i")` et `bytearray` -- de quoi tuer le
-processus après plusieurs heures de génération.
+`max_frontier` mesure la mémoire de la structure d'attente, mais pas l'empreinte
+totale : les tables auxiliaires pèsent bien plus lourd. À `n = 100000`, A\* demande
+~112 Gio rien qu'en `array("i")` et `bytearray`, après plusieurs heures de
+génération.
 
-Comme pour les générateurs, `budget.py` répond **avant** la moindre allocation.
+Comme pour les générateurs, `budget.py` estime l'empreinte avant toute allocation.
 
 | Solveur | Modèle | Mesures | `n = 1 000` | `n = 100 000` |
 |---|---|---:|---:|---:|
-| `astar` | `12·n²` | 11,05 → 10,16 o/cellule | 12 Mio | **~112 Gio** |
+| `astar` | `12·n²` | 11,05 → 10,16 o/cellule | 12 Mio | ~112 Gio |
 | `dijkstra` | `12·n²` | 10,51 → 10,12 o/cellule | 12 Mio | ~112 Gio |
 | `recursive_backtracking` | `1,5·n² + 500·n` | 1,66 → 1,13 o/cellule | 2 Mio | ~15 Gio |
 
-**Pourquoi A\* est dix fois plus gourmand** : il paie deux `array("i")` de `n²`
+A\* est dix fois plus gourmand parce qu'il paie deux `array("i")` de `n²`
 éléments (`g` et `parents`, 4 octets chacun) plus deux `bytearray` (`closed` et
-`state`), soit 10 octets par cellule. Le backtracking, lui, se contente d'un
+`state`), soit 10 octets par cellule. Le backtracking se contente d'un
 `bytearray` d'état et d'une pile qui reste courte devant `n²`.
 
 ### Générer ne suffit pas à résoudre
 
-C'est le piège que le garde-fou de génération seul laissait passer. Sous 2 Gio :
+Sous 2 Gio :
 
 | | Plafond |
 |---|---:|
 | Génération avec `prim` | `n ≈ 28 714` |
 | Résolution avec `astar` | `n ≈ 13 377` |
 
-Entre les deux, la commande générerait pendant des heures pour mourir ensuite dans
-le solveur. `mazes run` vérifie donc **les deux phases avant la moindre
-allocation**, et refuse en nommant la phase fautive :
+Entre les deux, la commande générerait pendant des heures avant de mourir dans le
+solveur. `mazes run` vérifie donc les deux phases avant d'allouer quoi que ce
+soit, et refuse en nommant la phase fautive :
 
 ```
 $ mazes run --n 20000 --generator prim --solver astar
@@ -491,7 +491,7 @@ Résolution refusée : astar demanderait 4.5 Gio pour n=20000, au-delà du budge
 Essayer un solveur plus sobre : recursive_backtracking. Relever MAZES_MEMORY_BUDGET, ou reduire --n.
 ```
 
-Le message ne propose que des solveurs qui **passent réellement** : conseiller
+Le message ne propose que des solveurs qui passent réellement : conseiller
 « essayez un autre solveur » quand aucun ne tient serait une impasse de plus.
 
 `MAZES_MEMORY_BUDGET` relève le plafond, en octets, pour les deux phases.

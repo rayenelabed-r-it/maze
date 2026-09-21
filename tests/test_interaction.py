@@ -2,28 +2,19 @@
 
 Ce qu'on vérifie, et pourquoi
 -----------------------------
-Ce module touche à ``stdin``, donc au seul endroit du projet où un bug ne
-produit pas une erreur mais un **blocage**. Un test qui échoue se voit ; une
-suite qui attend une frappe ne se voit pas.
-
-Le danger, en une phrase
-------------------------
-Sous pytest, ``sys.stdin`` est un ``DontReadFromInput`` dont ``isatty()`` rend
-``False`` et ``fileno()`` lève. Une détection naïve en déduirait « entrée
-redirigée, allons chercher le terminal de contrôle » -- ouvrirait ``CONIN$``, et
-attendrait pour toujours. ``test_stdin_sans_fileno_ne_cherche_pas_de_console``
-verrouille ce point : il remplace l'ouvreur par une fonction qui échoue si on
-l'appelle.
-
-Le second verrou est ``test_sous_pytest_renvoie_none`` : avec ``pytest -s``,
-pytest laisse le vrai ``stdin`` en place, et seule la variable
-``PYTEST_CURRENT_TEST`` empêche la question d'être posée.
+Ce module touche à ``stdin`` : c'est le seul endroit du projet où un bug produit
+un blocage plutôt qu'une erreur, et une suite qui attend une frappe ne se voit
+pas. Sous pytest, ``sys.stdin`` est un objet dont ``fileno()`` lève, ce dont une
+détection naïve déduirait « entrée redirigée », avant d'ouvrir ``CONIN$`` et
+d'attendre indéfiniment.
+``test_stdin_sans_fileno_ne_cherche_pas_de_console`` remplace l'ouvreur par une
+fonction qui échoue si on l'appelle, et verrouille l'ordre des vérifications.
 
 Deux états à ne pas confondre
 -----------------------------
-``confirm`` renvoie ``None`` (aucun terminal) ou ``False`` (l'utilisateur a dit
-non). Plusieurs tests vérifient que les deux restent distincts jusqu'au bout de
-la chaîne : les confondre ferait écrire en silence ce qu'on voulait éviter.
+``confirm`` renvoie ``None`` quand aucune source n'existe, et ``False`` quand
+l'utilisateur a dit non. Plusieurs tests vérifient que les deux restent
+distincts jusqu'au bout de la chaîne.
 """
 
 from __future__ import annotations

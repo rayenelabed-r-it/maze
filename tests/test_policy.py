@@ -2,24 +2,18 @@
 
 Ce qu'on vérifie, et pourquoi
 -----------------------------
-``ExportPolicy`` a longtemps été du code mort : implémenté et documenté, mais
-appelé nulle part. Ces tests le figent **avant** de le brancher sur le CLI, pour
-que le câblage s'appuie sur quelque chose de vérifié plutôt que sur du code
-jamais exécuté.
+``ExportPolicy`` décide ce qui sera écrit avant tout calcul : ASCII complet,
+image réduite, ou fichier de statistiques seul. C'est elle qui empêche
+l'écriture d'un ASCII de 37 Gio à ``n = 100000``.
 
 Le piège à éviter
 -----------------
-Les deux régimes mémoire de l'image ne se ressemblent pas : à pleine résolution
-un JPEG de labyrinthe pèse ~1.14 octet par pixel, mais dès que la réduction
-s'applique la quasi-totalité de l'image devient blanche et le poids tombe à
-~0.03. Se tromper de branche, c'est annoncer 930 Mio là où le fichier en fait
-27. Les tests de :class:`TestEstimation` verrouillent la bascule.
-
-La falaise de ``n = 16383`` à ``n = 16384``
--------------------------------------------
-``image_scale`` passe de 1 à 2 quand le côté dépasse 32768, et l'estimation
-chute d'un facteur ~90. Ce n'est pas un artefact du modèle : c'est le
-comportement réel de ``subsample_dense``, qui réduit par minimum de bloc.
+Les deux régimes d'estimation du JPEG ne se ressemblent pas : l'image perd ses
+murs dès qu'elle est réduite, et le poids par pixel chute d'un facteur 12. Se
+tromper de branche annoncerait 930 Mio là où le fichier en fait 27, d'où les
+tests de :class:`TestEstimation`. Le passage de ``n = 16383`` à ``n = 16384``
+déclenche la réduction et fait chuter l'estimation, ce que verrouille
+``test_la_falaise_au_passage_du_seuil``.
 """
 
 from __future__ import annotations
@@ -186,12 +180,12 @@ class TestFormatBytes:
         [
             (0, "0 o"),
             (999, "999 o"),
-            (1024, "1.0 Kio"),
-            (1536, "1.5 Kio"),
-            (1024**2, "1.0 Mio"),
-            (61_000_000, "58.2 Mio"),
-            (1024**3, "1.0 Gio"),
-            (40_000_000_000, "37.3 Gio"),
+            (1024, "1,0 Kio"),
+            (1536, "1,5 Kio"),
+            (1024**2, "1,0 Mio"),
+            (61_000_000, "58,2 Mio"),
+            (1024**3, "1,0 Gio"),
+            (40_000_000_000, "37,3 Gio"),
         ],
     )
     def test_unites(self, octets: int, attendu: str) -> None:

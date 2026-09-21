@@ -295,14 +295,13 @@ coûte un facteur `log` supplémentaire.
 
 ## Budget mémoire
 
-Les trois générateurs n'ont pas du tout le même appétit. `kruskal.py` construit
-la liste de **toutes** ses arêtes avant d'en abattre une seule : à `n = 100000`
-cela fait 20 milliards de tuples, soit ~2 Tio. Partir quand même tue le processus
-en `MemoryError` — après plusieurs minutes, sans message utile et sans rien avoir
-produit.
+Les trois générateurs n'ont pas le même appétit. `kruskal.py` construit la liste
+de toutes ses arêtes avant d'en abattre une seule : à `n = 100000` cela fait
+20 milliards de tuples, soit ~2 Tio, et le processus meurt en `MemoryError` après
+plusieurs minutes.
 
-`budget.py` répond **avant** la moindre allocation, à partir du seul
-`n`. Chaque générateur a son modèle `a·n² + b·n + c`, calé sur des mesures
+`budget.py` estime l'empreinte à partir du seul `n`, avant toute allocation.
+Chaque générateur a son modèle `a·n² + b·n + c`, calé sur des mesures
 `tracemalloc` :
 
 | Générateur | Modèle | Mesures | `n = 1 000` | `n = 100 000` |
@@ -313,17 +312,17 @@ produit.
 
 Trois choses expliquent ces écarts :
 
-* **Kruskal** paie ses arêtes. Le coût par arête croît même avec `n`, parce que
-  les entiers `(r, c)` sortent du cache de CPython au-delà de 257.
-* **Prim** et **recursive_backtracking** ne paient qu'un `bytearray(n*n)`, soit
-  1 octet par cellule. Prim y ajoute une frontière en `O(n)`, qui se dilue
-  quand `n` grandit — d'où un coût par cellule qui *décroît*.
-* **recursive_backtracking** garde en plus sa pile, c'est-à-dire le chemin
-  courant : des tuples de deux entiers, donc ~25 octets par cellule.
+* Kruskal paie ses arêtes, et le coût par arête croît même avec `n` : les
+  entiers `(r, c)` sortent du cache de CPython au-delà de 257.
+* Prim et recursive_backtracking ne paient qu'un `bytearray(n*n)`, soit 1 octet
+  par cellule. Prim y ajoute une frontière en `O(n)`, qui se dilue quand `n`
+  grandit, d'où un coût par cellule qui décroît.
+* recursive_backtracking garde en plus sa pile, c'est-à-dire le chemin courant :
+  des tuples de deux entiers, donc ~25 octets par cellule.
 
-**Les modèles majorent les mesures**, volontairement. Surestimer refuse un calcul
-qui aurait tenu — et l'utilisateur peut relever le budget ; sous-estimer tue le
-processus sans rien produire. L'asymétrie justifie le biais. Le test
+Les modèles majorent les mesures, volontairement. Surestimer refuse un calcul qui
+aurait tenu, ce que l'utilisateur peut corriger en relevant le budget ;
+sous-estimer tue le processus sans rien produire. Le test
 `test_budget.py::TestLeModeleMajoreLaMesure` recoupe chaque prédiction contre un
 pic réellement mesuré : si un générateur changeait de structure de données, il
 échouerait.
@@ -352,7 +351,14 @@ statistiques à la place :
 
 ```
 Génération refusée : kruskal demanderait 2.1 Tio pour n=100000, au-delà du budget de 2.0 Gio.
-Essayer un autre générateur -- prim est le plus sobre -- ou relever MAZES_MEMORY_BUDGET.
+Aucun générateur ne passe a cette taille. Relever MAZES_MEMORY_BUDGET, ou reduire --n.
+```
+
+À une taille où un générateur moins gourmand suffit, le message le nomme :
+
+```
+Génération refusée : kruskal demanderait 5.4 Gio pour n=5000, au-delà du budget de 2.0 Gio.
+Essayer un générateur plus sobre : prim, recursive_backtracking. Relever MAZES_MEMORY_BUDGET, ou reduire --n.
 ```
 
 Le code de retour est `1`, et il n'y a **pas de traceback**. Voir

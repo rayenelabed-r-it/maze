@@ -1,13 +1,11 @@
 """Fichier de statistiques : ce qui reste quand l'export est refusé.
 
-Quand un labyrinthe est trop gros pour être exporté -- ou quand l'utilisateur
-refuse l'écriture -- il ne reste rien sur le disque. Ce module produit un résumé
-textuel compact, au format décrit dans ``doc/05-export.md``, pour que la
-génération laisse malgré tout une trace exploitable.
+Quand un labyrinthe est trop gros pour être exporté, ou quand l'utilisateur
+refuse l'écriture, ce module produit un résumé texte du résultat. Format décrit
+dans ``doc/05-export.md``.
 
-Le fichier est en **ASCII pur** : il passe par :func:`mazes.rendering.ascii.write_text_lines`,
-qui encode en ``ascii`` strict. Une raison d'export contenant un accent ferait
-échouer l'écriture en production, et pas dans les tests.
+Le fichier est en ASCII pur : une raison d'export contenant un accent ferait
+échouer l'écriture.
 """
 
 from __future__ import annotations
@@ -23,12 +21,11 @@ if TYPE_CHECKING:  # pragma: no cover
     from mazes.rendering.policy import ExportPlan
     from mazes.solvers.base import SolveResult
 
-#: Taille des bandes de comptage, en octets. Le popcount est fait bande par
-#: bande : sur un tampon de 1,25 Gio (``n = 100000``), dérouler les bits d'un
-#: coup demanderait 10 Gio de mémoire temporaire.
+#: Taille des bandes de comptage. À ``n = 100000``, dérouler les 1,25 Gio du
+#: tampon d'un coup demanderait 10 Gio de mémoire temporaire.
 BAND_BYTES = 1 << 20
 
-#: En-tête du fichier, première ligne du format.
+#: Première ligne du format.
 HEADER = "labyrinthe_statistiques"
 
 
@@ -40,33 +37,20 @@ def _popcount(tampon: bytearray, band_bytes: int) -> int:
     total = 0
     for debut in range(0, len(tampon), band_bytes):
         bande = np.frombuffer(vue[debut : debut + band_bytes], dtype=np.uint8)
-        # ``bitwise_count`` compte les bits de chaque octet ; ``sum`` accumule
-        # sur un entier de plateforme, donc aucun risque de débordement en uint8.
         total += int(np.bitwise_count(bande).sum())
     return total
 
 
-def count_passages(
-    grid: WallGrid,
-    *,
-    band_bytes: int = BAND_BYTES,
-) -> int:
-    """Nombre de murs abattus, c'est-à-dire de passages entre cellules.
+def count_passages(grid: WallGrid, *, band_bytes: int = BAND_BYTES) -> int:
+    """Nombre de murs abattus, soit ``n² - 1`` pour un labyrinthe parfait.
 
-    Vaut ``n² - 1`` pour un labyrinthe parfait : un arbre couvrant de ``n²``
-    cellules a exactement ``n² - 1`` arêtes. Un labyrinthe avec des boucles en
-    a davantage, une grille entièrement close zéro.
+    Le dernier octet de chaque tampon déborde de ``8·len - n²`` bits qui ne
+    désignent aucune cellule. ``WallGrid.__init__`` les force à 1, donc les
+    compter comme des murs fausserait le total de 7 à 15 unités. On les retranche
+    du popcount.
 
-    **Le piège des bits de remplissage.** Les tampons font ``ceil(n²/8)`` octets,
-    donc le dernier octet déborde de ``8*len - n²`` bits qui ne désignent aucune
-    cellule. Ces bits sont **toujours à 1** -- ``WallGrid.__init__`` les force,
-    pour que deux grilles identiques comparent leurs tampons à l'identique (voir
-    ``core/grid.py``). Les compter comme des murs fausserait le total de 7 à 15
-    unités : invisible à l'œil sur ``10¹⁰`` cellules, et donc jamais détecté sans
-    un test dédié.
-
-    Le comptage est vectorisé : à ``n = 100000``, une boucle par cellule
-    demanderait ``10¹⁰`` itérations Python.
+    Le comptage parcourt les octets, pas les cellules : à ``n = 100000``, une
+    boucle par cellule demanderait ``10¹⁰`` itérations.
     """
     if band_bytes < 1:
         raise ValueError(f"band_bytes doit etre >= 1, recu {band_bytes}")
@@ -89,11 +73,10 @@ def _etat_ascii(plan: ExportPlan, ecrit: bool) -> str:
 
 
 def _raison_ascii(plan: ExportPlan, ecrit: bool) -> str | None:
-    """Pourquoi l'ASCII n'est pas là. ``None`` quand il l'est."""
+    """Pourquoi l'ASCII n'est pas là, ou ``None`` quand il l'est."""
     if ecrit and plan.ascii_full:
         return None
     if not ecrit and plan.ascii_full:
-        # La politique l'autorisait : c'est l'utilisateur qui a dit non.
         return "refuse par l'utilisateur"
     return plan.reason
 
@@ -102,7 +85,10 @@ def _etat_image(plan: ExportPlan) -> str:
     """Description de l'image exportée."""
     if plan.image_scale == 1:
         return "pleine resolution"
-    return f"reduite x{plan.image_scale} -> {plan.projected_image_side}x{plan.projected_image_side}"
+    return (
+        f"reduite x{plan.image_scale} -> "
+        f"{plan.projected_image_side}x{plan.projected_image_side}"
+    )
 
 
 def _longueur_chemin(result: SolveResult | None) -> str:
@@ -125,15 +111,13 @@ def stats_lines(
     result: SolveResult | None = None,
     ascii_ecrit: bool | None = None,
 ) -> Iterator[str]:
-    """Produit les lignes du fichier de statistiques.
+    """Lignes du fichier de statistiques.
 
-    ``ascii_ecrit`` vaut ``None`` par défaut, ce qui signifie « selon la
-    politique ». Le CLI y passe ``False`` quand c'est l'utilisateur qui a refusé
-    une écriture que la politique autorisait : sans cela, le fichier annoncerait
-    un export qui n'a pas eu lieu.
-
-    Attention au défaut : « écrit selon la politique » n'est pas ``ascii_full``,
-    mais ``non refusé``. Un ASCII *réduit* est bien écrit, lui.
+    ``ascii_ecrit`` vaut ``None`` pour « selon la politique ». Le CLI y passe
+    ``False`` quand c'est l'utilisateur qui a refusé une écriture que la
+    politique autorisait, sinon le fichier annoncerait un export qui n'a pas eu
+    lieu. Attention au défaut : « écrit selon la politique » vaut ``non refuse``,
+    pas ``ascii_full``, un ASCII réduit étant bien écrit.
     """
     n = grid.n
     ecrit = (not plan.ascii_refused) if ascii_ecrit is None else ascii_ecrit
@@ -160,7 +144,7 @@ def write_stats(
     result: SolveResult | None = None,
     ascii_ecrit: bool | None = None,
 ) -> Path:
-    """Écrit le fichier de statistiques, en flux, et renvoie son chemin."""
+    """Écrit le fichier de statistiques et renvoie son chemin."""
     return write_text_lines(
         stats_lines(grid, plan, result=result, ascii_ecrit=ascii_ecrit),
         destination,
@@ -168,18 +152,14 @@ def write_stats(
 
 
 def refused_lines(n: int, *, phase: str, raison: str) -> Iterator[str]:
-    """Lignes du fichier de statistiques quand un calcul a été refusé.
+    """Lignes du fichier quand un calcul a été refusé.
 
-    ``phase`` vaut ``"generation"`` ou ``"resolution"`` : le budget mémoire
-    s'applique aux deux, et rien n'existe tant qu'aucune des deux n'a abouti.
-
-    Il n'y a alors aucune grille, donc ``passages`` et ``chemin_longueur`` ne
-    peuvent pas être calculés, et ils valent ``inconnu`` plutôt que zéro -- un
+    ``phase`` vaut ``"generation"`` ou ``"resolution"``. Aucune grille n'existe,
+    donc ``passages`` et ``chemin_longueur`` valent ``inconnu`` et non zéro : un
     zéro se lirait comme « labyrinthe sans passage ».
 
-    Les lignes d'export sont **absentes**, et non marquées « refuse » : rien n'a
-    été produit, donc rien n'a été refusé à l'export. Annoncer un refus d'export
-    décrirait une décision qui n'a jamais eu lieu.
+    Les lignes d'export sont absentes : rien n'a été produit, donc rien n'a été
+    refusé à l'export.
     """
     if n < 1:
         raise ValueError(f"n doit etre >= 1, recu {n}")

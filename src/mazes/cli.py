@@ -5,22 +5,12 @@ choisi) -> exporter en JPEG. Aucun algorithme n'est codé en dur : les choix
 viennent des registres, donc ajouter un fichier dans ``generators/`` ou
 ``solvers/`` suffit à l'exposer.
 
-Trois garde-fous, du plus tôt au plus tard
-------------------------------------------
-1. :func:`~mazes.budget.fits_generation` et :func:`~mazes.budget.fits_solving`
-   refusent un calcul hors budget **avant la moindre allocation**. Kruskal
-   construit la liste de toutes ses arêtes -- à ``n = 100000`` cela fait ~2 Tio
-   -- et A* a besoin de ~112 Gio. Partir quand même tue le processus en
-   ``MemoryError``, parfois après plusieurs heures de calcul.
-2. :class:`~mazes.rendering.ExportPolicy` décide ce qui tient sur le disque :
-   au-delà de 8000 caractères de côté, l'ASCII 1:1 n'est **pas** écrit -- à
-   ``n = 100000`` il ferait ~37 Gio -- et l'image est réduite pour rester sous
-   la limite JPEG.
-3. :func:`~mazes.interaction.should_write` demande son accord à l'utilisateur
-   au-delà de ``CONFIRM_THRESHOLD_BYTES`` (256 Mio).
+Trois refus possibles, dans cet ordre : le budget mémoire, qui empêche de lancer
+le calcul (``mazes.budget``) ; la politique d'export, qui décide ce qui tient sur
+le disque (``mazes.rendering.ExportPolicy``) ; et la taille du fichier, qui
+déclenche une demande de confirmation (``mazes.interaction``).
 
-Quand quelque chose est refusé, un **fichier de statistiques** prend le relais :
-la génération laisse une trace exploitable au lieu de ne rien produire.
+Dans les trois cas, un fichier de statistiques remplace la sortie manquante.
 """
 
 from __future__ import annotations
@@ -104,10 +94,8 @@ def _ecrire_si_autorise(
 ) -> Path | None:
     """Écrit ``chemin`` après confirmation. ``None`` si l'écriture est refusée.
 
-    On n'arrive ici que pour un fichier que la politique **autorise**. Un verdict
-    ``None`` -- aucun terminal joignable -- suit donc cette décision et écrit :
-    sinon, un script sans console ne produirait plus rien alors que la
-    dimension du fichier ne posait aucun problème.
+    On n'arrive ici que pour un fichier que la politique autorise, donc un
+    verdict ``None`` (aucun terminal joignable) suit cette décision et écrit.
     """
     verdict = should_write(
         octets,
@@ -145,16 +133,11 @@ def _refuser_calcul(
 ) -> int:
     """Refuse un calcul hors budget et écrit les statistiques à la place.
 
-    Même règle que pour l'export : quand la sortie demandée est hors de portée,
-    un fichier de statistiques prend le relais. Laisser partir le calcul
-    donnerait un ``MemoryError`` en cours de route -- ni message utile, ni trace,
-    et parfois après plusieurs minutes d'attente.
-
-    Le code de retour est ``1``, contrairement au refus d'export : ici le
-    labyrinthe demandé n'existe pas du tout, et un script doit pouvoir le voir.
+    Code de retour ``1``, contrairement au refus d'export qui sort en ``0`` : ici
+    le labyrinthe demandé n'existe pas du tout.
 
     ``etiquette`` porte les accents du message console, ``phase`` la clé écrite
-    dans le fichier de statistiques -- lequel est encodé en **ASCII strict**. Les
+    dans le fichier de statistiques, lequel est encodé en ASCII strict. Les
     confondre fait planter l'écriture sur le « é » de « Résolution ».
     """
     budget = memory_budget()
@@ -165,14 +148,14 @@ def _refuser_calcul(
         file=sys.stderr,
     )
 
-    # Ne conseiller que ce qui marche : quand c'est prim qui echoue, dire
-    # « essayez prim, le plus sobre » serait une plaisanterie.
+    # Ne conseiller que ce qui passe : quand c'est prim qui echoue, proposer
+    # prim serait une plaisanterie.
     piste = (
         f"Essayer un {quoi} plus sobre : {', '.join(alternatives)}."
         if alternatives
-        else f"Aucun {quoi} ne passe a cette taille."
+        else f"Aucun {quoi} ne passe à cette taille."
     )
-    print(f"{piste} Relever {BUDGET_ENV_VAR}, ou reduire --n.", file=sys.stderr)
+    print(f"{piste} Relever {BUDGET_ENV_VAR}, ou réduire --n.", file=sys.stderr)
 
     chemin = write_refused(
         n,
@@ -247,8 +230,8 @@ def _ecrire_resultat(
             stats_only=stats_only,
         )
     else:
-        # La politique refuse, ou ne sait produire qu'un ASCII réduit -- que
-        # ``write_ascii`` ne sait pas écrire (pas de paramètre d'échelle).
+        # La politique refuse l'ASCII, ou ne sait produire qu'une version
+        # réduite que ``write_ascii`` ne sait pas écrire.
         _signaler_refus_ascii(plan)
         ascii_ecrit = None
 
@@ -320,8 +303,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
     generateur = get_generator(args.algorithm)
     sortie = _sortie(args.output, f"maze_{args.algorithm}_{args.n}.txt")
 
-    # Avant toute allocation : Kruskal a besoin de la liste complete de ses
-    # aretes, et partir quand meme tuerait le processus en MemoryError.
+    # Avant toute allocation : partir quand meme tuerait le processus.
     if not fits_generation(args.algorithm, args.n):
         return _refuser_generation(args.algorithm, args.n, sortie)
 
@@ -365,8 +347,7 @@ def cmd_solve(args: argparse.Namespace) -> int:
     solveur = get_solver(args.algorithm)
     base = _sortie(args.output, f"solved_{args.algorithm}_{grille.n}")
 
-    # La grille existe deja (relue du disque) : seule la resolution peut etre
-    # hors budget.
+    # La grille existe deja : seule la resolution peut etre hors budget.
     if not fits_solving(args.algorithm, grille.n):
         return _refuser_resolution(args.algorithm, grille.n, base)
 
@@ -408,8 +389,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     rng = RandomSource(args.seed)
     base = _sortie(args.output, f"{args.generator}_{args.solver}_{args.n}")
 
-    # Les deux phases sont verifiees avant la moindre allocation : generer
-    # pendant des heures pour refuser de resoudre ensuite serait absurde.
+    # Les deux phases sont verifiees avant d'allouer quoi que ce soit.
     if not fits_generation(args.generator, args.n):
         return _refuser_generation(args.generator, args.n, base)
     if not fits_solving(args.solver, args.n):
@@ -542,20 +522,15 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Point d'entrée : exécute la sous-commande et renvoie un code de sortie.
 
-    Codes
-    -----
-    ``0`` succès -- y compris quand l'utilisateur refuse une écriture et que
-    seules les statistiques sont produites : répondre « non » est un choix, pas
-    une erreur. ``1`` échec métier (chemin absent, labyrinthe non parfait,
-    **génération ou résolution refusée faute de mémoire**). ``2`` erreur
-    d'entrée (fichier manquant, extension inconnue).
+    ``0`` succès, y compris quand seules les statistiques sont écrites ; ``1``
+    échec métier (chemin absent, labyrinthe non parfait, calcul refusé faute de
+    mémoire) ; ``2`` erreur d'entrée (fichier manquant, extension inconnue).
 
-    Le refus pour mémoire est un ``1``, contrairement au refus d'export : dans
-    le second cas le labyrinthe existe et c'est un fichier qui manque, dans le
-    premier il n'y a aucun labyrinthe du tout.
+    Un refus pour mémoire sort en ``1`` et non en ``0`` : le labyrinthe demandé
+    n'existe pas, alors qu'un refus d'export laisse le labyrinthe intact.
 
-    Une ligne de commande mal formée ne passe pas par ici : ``argparse`` sort en
-    ``SystemExit(2)`` avant l'appel de la sous-commande.
+    ``argparse`` sort en ``SystemExit(2)`` avant d'arriver ici si la ligne de
+    commande est mal formée.
     """
     # Forcer UTF-8 sur la console : sinon les accents français sortent en `�`
     # sous Windows (codepage cp1252/cp850 par défaut).

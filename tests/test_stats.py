@@ -2,21 +2,18 @@
 
 Ce qu'on vérifie, et pourquoi
 -----------------------------
-Quand un export est refusé, le fichier de statistiques est **tout ce qui
-reste**. S'il est faux, l'utilisateur n'a plus aucun moyen de savoir ce qui a
-été généré. On vérifie donc ses chiffres, pas seulement son existence.
+Quand un export est refusé, ce fichier est tout ce qui reste. S'il est faux,
+l'utilisateur n'a plus aucun moyen de savoir ce qui a été généré : on vérifie
+donc ses chiffres, pas seulement son existence.
 
 Le piège à éviter
 -----------------
-``count_passages`` compte les bits à 1 des tampons de murs, mais ces tampons
-sont arrondis à l'octet : le dernier contient ``8*len - n²`` bits de remplissage
-qui ne désignent aucune cellule. ``WallGrid.__init__`` les force à 1. Les
-compter comme des murs fait dériver le total -- et pas d'un peu : sur ``n = 3``,
-la formule naïve donne **-6** au lieu de 8. Passer à côté donnerait un nombre
-plausible et faux sur les grandes grilles, indétectable à l'œil.
-
-Toutes les valeurs attendues sont donc recoupées par un comptage force brute
-(parcours cellule par cellule), qui ne peut pas se tromper de la même façon.
+``count_passages`` compte les bits à 1 des tampons de murs, qui sont arrondis à
+l'octet. Le dernier contient des bits de remplissage que ``WallGrid`` force à 1 :
+les compter comme des murs fait dériver le total, jusqu'à donner -6 au lieu de 8
+sur ``n = 3``. Passer à côté donnerait un nombre plausible et faux sur les
+grandes grilles, indétectable à l'œil. Les valeurs attendues sont donc recoupées
+par un comptage force brute, cellule par cellule.
 """
 
 from __future__ import annotations

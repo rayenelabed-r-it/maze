@@ -19,31 +19,19 @@ MAX_IMAGE_SIDE = 32_768
 #: Au-delà de ce côté, un fichier de statistiques est toujours écrit.
 STATS_ALWAYS_ABOVE = 2_000
 
-#: Octets par pixel d'un JPEG qualité 95 en 4:4:4, **état du solveur compris**.
-#:
-#: Mesuré sur des labyrinthes parfaits résolus -- chemin rouge et cellules
-#: explorées bleu clair, donc ce que le CLI écrit réellement. De 1.34 à 1.25
-#: o/px de ``n = 200`` à ``n = 3000``, en décroissant lentement.
-#:
-#: La mesure **sans** état donnerait 1.13 : l'écart de 15 % vient des zones
-#: explorées, qu'un calibrage sur grille nue oublierait complètement.
-#:
-#: La valeur retenue majore la mesure. Surestimer fait prévenir un peu tôt ;
-#: sous-estimer laisserait remplir le disque en silence.
+#: Octets par pixel d'un JPEG qualité 95 en 4:4:4, chemin et cellules explorées
+#: compris. Mesuré de 1.34 à 1.25 o/px pour ``n`` allant de 200 à 3000. Sans
+#: l'état du solveur la mesure tomberait à 1.13, soit 15 % d'écart.
 IMAGE_BYTES_PER_PIXEL = 1.35
 
-#: Idem pour une image sous-échantillonnée.
+#: Idem pour une image sous-échantillonnée. Le régime réduit n'est pas
+#: proportionnellement plus léger : ``subsample_dense`` réduit par minimum de
+#: bloc et préserve le chemin, si bien que celui-ci occupe une part croissante
+#: d'une image de plus en plus petite. Mesuré de 0.05 à 0.39 o/px selon le
+#: facteur.
 #:
-#: Le régime réduit n'est **pas** simplement « plus léger » : ``subsample_dense``
-#: réduit par minimum de bloc et préserve le chemin (``preserve_path``), si bien
-#: que le chemin et les zones explorées occupent une part croissante d'une image
-#: de plus en plus petite. L'image ne blanchit donc pas.
-#:
-#: Mesuré sur ``n`` de 200 à 3000 et des facteurs de 2 à 32 : 0.05 à 0.39 o/px.
-#: Le maximum tombe au plus petit facteur (x2), celui qui produit la plus grande
-#: image -- donc le cas qui compte pour le seuil d'alerte. Là encore, la valeur
-#: retenue majore, ce qui prévient trop tôt aux forts facteurs mais ne laisse
-#: jamais passer un fichier énorme.
+#: Les deux constantes majorent les mesures : surestimer fait prévenir un peu
+#: tôt, sous-estimer laisserait remplir le disque en silence.
 IMAGE_BYTES_PER_PIXEL_REDUCED = 0.45
 
 
@@ -55,8 +43,8 @@ class ExportPlan:
     grid_side: int
     ascii_full: bool
     #: ``True`` quand l'ASCII 1:1 ne tient pas et que la réduction n'est pas
-    #: autorisée : aucun fichier ASCII ne sera écrit, ni complet ni réduit.
-    #: Sans ce drapeau, ``ascii_scale`` laisserait croire à une réduction.
+    #: autorisée : aucun fichier ASCII ne sera écrit. Sans ce drapeau,
+    #: ``ascii_scale`` laisserait croire à une réduction.
     ascii_refused: bool
     ascii_scale: int
     image_scale: int
@@ -68,11 +56,7 @@ class ExportPlan:
 
     @property
     def written_bytes(self) -> int:
-        """Octets que la politique laisse écrire : l'ASCII 1:1 et l'image.
-
-        L'ASCII refusé compte pour zéro : c'est ce que la politique décide de ne
-        pas écrire, et c'est cette valeur qui doit servir à prévenir l'utilisateur.
-        """
+        """Octets réellement écrits : l'ASCII 1:1 s'il passe, plus l'image."""
         return (self.ascii_bytes if self.ascii_full else 0) + self.image_bytes
 
     @property
@@ -94,8 +78,7 @@ class ExportPlan:
         """Décrit le sort de l'ASCII : écrit, réduit, ou refusé.
 
         Les deux cas où ``ascii_full`` est faux ne se ressemblent pas : avec
-        ``ascii_subsample`` un fichier réduit est écrit, sans lui **rien** ne
-        l'est. Les confondre ferait annoncer une réduction qui n'aura pas lieu.
+        ``ascii_subsample`` un fichier réduit est écrit, sans lui aucun ne l'est.
         """
         if self.ascii_full:
             return "oui"
@@ -220,16 +203,9 @@ class ExportPolicy:
     def estimate_image_bytes(self, n: int) -> int:
         """Taille estimée du JPEG, en octets.
 
-        Deux régimes, et l'écart entre les deux est de deux ordres de grandeur --
-        il ne faut donc pas se tromper de branche :
-
-        * ``image_scale == 1`` : l'image garde les murs, elle est très contrastée,
-          ``IMAGE_BYTES_PER_PIXEL`` ;
-        * ``image_scale > 1`` : le minimum de bloc blanchit presque tout,
-          ``IMAGE_BYTES_PER_PIXEL_REDUCED``.
-
-        L'estimation majore volontairement dans le second cas : cette valeur sert
-        à prévenir l'utilisateur avant d'écrire, pas à prédire au kilo-octet.
+        Deux régimes séparés par un facteur 12, selon que l'image est réduite ou
+        non. Se tromper de branche annoncerait 930 Mio là où le fichier en fait
+        27. Les deux constantes majorent la mesure.
         """
         cote = 2 * n + 1
         facteur = subsample_factor(cote, self.max_image_side)
@@ -267,18 +243,14 @@ _UNITES = (
 
 
 def format_bytes(octets: int) -> str:
-    """Formate un nombre d'octets en unité binaire lisible (``1.5 Gio``).
+    """Formate un nombre d'octets en unité binaire (``1.5 Gio``).
 
-    Aligné sur les unités déjà employées par le reste du projet (``Mio`` dans
-    ``grid.py`` et ``image.py``, ``Gio`` dans ``ExportPlan.reason``) : deux
-    nombres différents pour la même grandeur seraient pires que le détail près.
-
-    Sous 1024 octets, la valeur reste en octets bruts (``512 o``) : la virgule
-    y apporterait plus de bruit que d'information.
+    Unités binaires, comme partout ailleurs dans le projet. Sous 1024 octets, la
+    valeur reste en octets bruts.
     """
     if octets < 0:
         raise ValueError(f"octets doit etre >= 0, recu {octets}")
     for limite, unite in _UNITES:
         if octets >= limite:
-            return f"{octets / limite:.1f} {unite}"
+            return f"{octets / limite:.1f} {unite}".replace(".", ",")
     return f"{octets} o"
