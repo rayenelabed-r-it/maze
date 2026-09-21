@@ -1,31 +1,9 @@
-"""Confirmation avant d'écrire un gros fichier.
+"""Demande de confirmation avant d'écrire un gros fichier.
 
-Un labyrinthe de ``n = 100000`` produit un ASCII de ``200001 x 200001``
-caractères, soit ~37 Gio. Écrire ça sans rien demander est une façon efficace de
-remplir un disque. Ce module pose la question, et laisse l'utilisateur décider.
-
-Trois états, pas deux
----------------------
-:func:`confirm` renvoie ``True``, ``False``, ou ``None``. ``None`` n'est pas
-``False`` : le premier dit « aucun moyen de demander », le second « l'utilisateur
-a dit non ». Les confondre ferait écrire en silence dans un cas et refuser dans
-l'autre. :func:`should_write` propage cette distinction.
-
-Où poser la question
---------------------
-:func:`sources` les essaie dans l'ordre :
-
-1. **``stdin``**, toujours en premier. Un tube ou un fichier redirigé peut porter
-   la réponse : ``echo o | mazes run ...`` doit fonctionner, et lire ailleurs
-   perdrait la réponse de l'utilisateur.
-2. **La console du système** (``CONIN$``/``CONOUT$`` sous Windows, ``/dev/tty``
-   ailleurs), si ``stdin`` s'est révélé épuisé. Elle reste attachée au processus
-   même quand les flux sont redirigés, ce qui permet à ``mazes run > log.txt``
-   d'afficher quand même la question.
-3. Rien : l'appelant applique alors la politique d'export, qui sait réduire ou
-   refuser sans personne pour répondre.
-
-Ce module ne dépend d'aucun autre module du projet : c'est une feuille du graphe.
+Au-delà de :data:`CONFIRM_THRESHOLD_BYTES`, le CLI demande l'accord de
+l'utilisateur. La question est posée sur ``stdin`` s'il est utilisable, sinon
+sur le périphérique de console du système (``CONIN$`` sous Windows, ``/dev/tty``
+ailleurs), qui reste attaché même quand les flux sont redirigés.
 """
 
 from __future__ import annotations
@@ -47,25 +25,19 @@ __all__ = [
 ]
 
 #: Au-delà de cette taille estimée, l'écriture demande confirmation (256 Mio).
-#:
-#: **Lue dans le corps des fonctions, jamais en valeur par défaut.** Une
-#: constante placée en défaut d'argument serait liée à l'import : la patcher
-#: après coup n'aurait plus aucun effet, et les tests ne pourraient plus
-#: déclencher le seuil sans écrire des fichiers de plusieurs centaines de Mio.
+#: Lue dans le corps des fonctions, pour que les tests puissent la ramener à zéro.
 CONFIRM_THRESHOLD_BYTES = 256 * 1024 * 1024
 
-#: Variable d'environnement qui fait taire la question (scripts, CI, hôte).
+#: Variable d'environnement qui fait taire la question (scripts, CI).
 NO_PROMPT_ENV_VAR = "MAZES_NO_PROMPT"
 
-#: Réponses acceptées, en minuscules.
 OUI = frozenset({"o", "oui", "y", "yes"})
 NON = frozenset({"n", "non", "no"})
 
 #: Nombre de réponses incomprises avant de retenir le défaut.
 MAX_ESSAIS = 3
 
-#: Variable que pytest positionne pendant un test. Sa seule présence interdit de
-#: chercher une console : voir :func:`sources`.
+#: Positionnée par pytest pendant un test.
 _PYTEST_ENV_VAR = "PYTEST_CURRENT_TEST"
 
 
@@ -80,10 +52,8 @@ def _isatty(flux: object) -> bool:
 def _a_un_fileno(flux: object) -> bool:
     """``flux`` est-il adossé à un descripteur de fichier réel ?
 
-    Distingue un vrai flux redirigé (tube, fichier) d'un objet de test. Sous
-    pytest, ``sys.stdin`` est un ``DontReadFromInput`` dont ``fileno()`` lève
-    ``io.UnsupportedOperation`` -- sous-classe d'``OSError`` *et* de
-    ``ValueError``, donc attrapée ici.
+    Sous pytest, ``sys.stdin`` est un objet dont ``fileno()`` lève
+    ``io.UnsupportedOperation``, sous-classe d'``OSError`` et de ``ValueError``.
     """
     try:
         flux.fileno()  # type: ignore[attr-defined]
@@ -93,10 +63,9 @@ def _a_un_fileno(flux: object) -> bool:
 
 
 def _ouvrir_terminal_de_controle() -> tuple[TextIO, TextIO] | None:
-    """Ouvre le périphérique de console du système, ou ``None`` s'il n'existe pas.
+    """Ouvre le périphérique de console, ou ``None`` s'il n'y en a pas.
 
-    Les descripteurs restent ouverts : ils sont rendus à l'appelant, qui s'en
-    sert pour poser la question. Un ``with`` les refermerait aussitôt.
+    Les descripteurs restent ouverts : ils sont rendus à l'appelant.
     """
     try:
         if os.name == "nt":
@@ -106,36 +75,28 @@ def _ouvrir_terminal_de_controle() -> tuple[TextIO, TextIO] | None:
         flux = open("/dev/tty", "r+", encoding="utf-8", errors="replace")  # noqa: SIM115
         return flux, flux
     except OSError:
-        # Aucune console attachée : service, tâche planifiée, conteneur.
         return None
 
 
 def console() -> tuple[TextIO, TextIO] | None:
-    """Console du système, ou ``None``. Ne consulte pas ``stdin``.
-
-    Voir :func:`sources` pour l'ordre complet des sources.
-    """
+    """Console du système, ou ``None``. Ne consulte pas ``stdin``."""
     if os.environ.get(NO_PROMPT_ENV_VAR) or os.environ.get(_PYTEST_ENV_VAR):
         return None
     return _ouvrir_terminal_de_controle()
 
 
 def sources() -> Iterator[tuple[TextIO, TextIO]]:
-    """Sources d'entrée à essayer, dans l'ordre. Vide s'il ne faut pas demander.
+    """Sources d'entrée à essayer, ``stdin`` d'abord puis la console.
 
-    **L'ordre et les gardes ne sont pas négociables.** Chercher la console avant
-    d'avoir écouté ``stdin`` perdrait une réponse envoyée par tube ; la chercher
-    sous pytest ouvrirait ``CONIN$`` et bloquerait la suite de tests
-    indéfiniment, faute de frappe qui viendrait jamais.
+    L'ordre compte : aller chercher la console avant d'écouter ``stdin``
+    perdrait une réponse envoyée par tube. La console n'est tentée que si
+    ``stdin`` est un vrai flux et non un objet de test.
     """
     if os.environ.get(NO_PROMPT_ENV_VAR) or os.environ.get(_PYTEST_ENV_VAR):
         return
 
     yield sys.stdin, sys.stderr
 
-    # ``stdin`` sans descripteur réel : objet de test, flux en mémoire. Il n'y a
-    # aucune console légitime à chercher derrière -- et en chercher une serait le
-    # seul moyen de bloquer un appelant qui a remplacé ``sys.stdin``.
     if not (_isatty(sys.stdin) or _a_un_fileno(sys.stdin)):
         return
 
@@ -145,7 +106,7 @@ def sources() -> Iterator[tuple[TextIO, TextIO]]:
 
 
 def _etiquette(defaut: bool) -> str:
-    """Invite affichée entre crochets, la majuscule marquant le défaut."""
+    """Invite entre crochets, la majuscule marquant le défaut."""
     return "O/n" if defaut else "o/N"
 
 
@@ -155,11 +116,7 @@ def _demander(
     stream_out: TextIO,
     defaut: bool,
 ) -> bool | None:
-    """Boucle de saisie bornée sur une source.
-
-    Renvoie ``None`` quand le flux est épuisé : c'est le signal pour passer à la
-    source suivante, et non une réponse.
-    """
+    """Boucle de saisie sur une source. ``None`` quand le flux est épuisé."""
     for _ in range(MAX_ESSAIS):
         stream_out.write(f"{message} [{_etiquette(defaut)}] ")
         stream_out.flush()
@@ -170,8 +127,6 @@ def _demander(
             return None
 
         if ligne == "":
-            # Flux épuisé : redirection depuis /dev/null, tube fermé, ou rien
-            # n'a été fourni. Insister bouclerait indéfiniment.
             stream_out.write("\n")
             return None
 
@@ -194,15 +149,13 @@ def confirm(
     stream_out: TextIO | None = None,
     defaut: bool = False,
 ) -> bool | None:
-    """Pose une question oui/non. ``None`` quand aucun moyen de demander.
+    """Pose une question oui/non.
 
-    ``defaut`` est la réponse retenue si l'utilisateur tape Entrée sans rien
-    écrire. Il vaut ``False`` par défaut : une touche Entrée accidentelle ne doit
-    pas déclencher l'écriture de plusieurs gigaoctets.
+    ``None`` signifie qu'aucune source n'est disponible, ce qui n'est pas la même
+    chose que ``False``. ``defaut`` vaut ``False`` : une touche Entrée
+    accidentelle ne doit pas déclencher l'écriture de plusieurs gigaoctets.
 
-    Les flux sont injectables pour les tests. Les fournir court-circuite
-    :func:`sources` : un flux explicite est la seule source consultée, et son
-    épuisement retombe sur ``defaut`` au lieu d'aller chercher une console.
+    Fournir les deux flux court-circuite :func:`sources` et n'essaie qu'eux.
     """
     if (stream_in is None) != (stream_out is None):
         raise ValueError("stream_in et stream_out doivent etre fournis ensemble")
@@ -227,16 +180,13 @@ def should_write(
 ) -> bool | None:
     """Faut-il écrire un fichier de ``octets`` octets ?
 
-    * ``True`` -- écrire ;
-    * ``False`` -- ne pas écrire ;
-    * ``None`` -- aucun moyen de demander : à l'appelant d'appliquer la politique
-      d'export, qui sait réduire ou refuser sans personne pour répondre.
+    ``True`` écrire, ``False`` ne pas écrire, ``None`` aucun moyen de demander
+    et l'appelant applique la politique d'export.
     """
     if stats_only:
         return False
     if force:
         return True
-    # Seuil relu ici pour que les tests puissent le ramener à zéro.
     if octets <= CONFIRM_THRESHOLD_BYTES:
         return True
     return confirm(message)

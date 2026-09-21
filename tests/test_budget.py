@@ -2,27 +2,17 @@
 
 Ce qu'on vérifie, et pourquoi
 -----------------------------
-Le budget décide si un calcul est lancé **avant** toute allocation. Un modèle
-qui sous-estime ne produit pas une erreur : il laisse le processus mourir en
-``MemoryError``, sans message et sans rien avoir produit. C'est exactement le
-crash que ce module existe pour éviter.
+Le budget décide si un calcul est lancé, avant toute allocation. Un modèle qui
+sous-estime ne produit pas une erreur : il laisse le processus mourir en
+``MemoryError``, sans message et sans rien avoir produit.
+:class:`TestLeModeleMajoreLaMesure` compare donc chaque prédiction à un pic
+réellement mesuré par ``tracemalloc``. Un modèle écrit à la main peut dériver de
+l'algorithme qu'il décrit : si ``kruskal.py`` changeait de structure de données,
+la prédiction resterait plausible et fausse, et ce test-là échouerait.
 
-Le test décisif est donc :class:`TestLeModeleMajoreLaMesure`, qui compare chaque
-prédiction à un pic réellement mesuré par ``tracemalloc``. Les autres tests
-vérifient les seuils et la lecture de la variable d'environnement.
-
-Pourquoi recouper par une mesure
---------------------------------
-Un modèle écrit à la main peut dériver de l'algorithme qu'il décrit. Si
-``kruskal.py`` changeait de structure de données, la prédiction resterait
-plausible et fausse. Ce test-là échouerait -- pas les autres.
-
-Pourquoi deux familles de modèles
----------------------------------
-``recursive_backtracking`` est **à la fois** un générateur et un solveur, avec
-des empreintes qui n'ont rien à voir : 30 o/cellule contre 2. Une table unique
-écraserait silencieusement l'un des deux. :class:`TestPasDeCollision` verrouille
-ce point.
+:class:`TestPasDeCollision` couvre ``recursive_backtracking``, qui figure dans
+le registre des générateurs comme dans celui des solveurs, avec deux empreintes
+qui n'ont rien à voir.
 """
 
 from __future__ import annotations
