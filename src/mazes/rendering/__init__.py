@@ -38,10 +38,20 @@ from mazes.rendering.policy import (
     MAX_IMAGE_SIDE,
     ExportPlan,
     ExportPolicy,
+    format_bytes,
     subsample_factor,
+)
+from mazes.rendering.stats import (
+    BAND_BYTES,
+    count_passages,
+    refused_lines,
+    stats_lines,
+    write_refused,
+    write_stats,
 )
 
 __all__ = [
+    "BAND_BYTES",
     "BAND_HEIGHT",
     "DEFAULT_CHARSET",
     "DEFAULT_STYLE",
@@ -59,16 +69,22 @@ __all__ = [
     "ExportPolicy",
     "ImageStyle",
     "choose_format",
+    "count_passages",
+    "format_bytes",
     "iter_ascii_lines",
     "parse_ascii",
     "print_preview",
     "read_ascii",
+    "refused_lines",
     "render_dense",
     "render_dense_banded",
     "render_to_string",
+    "stats_lines",
     "subsample_dense",
     "subsample_factor",
     "to_image",
     "write_ascii",
     "write_image",
+    "write_refused",
+    "write_stats",
 ]

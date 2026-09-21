@@ -4,6 +4,23 @@ Pipeline de la consigne : générer (algorithme choisi) -> résoudre (algorithme
 choisi) -> exporter en JPEG. Aucun algorithme n'est codé en dur : les choix
 viennent des registres, donc ajouter un fichier dans ``generators/`` ou
 ``solvers/`` suffit à l'exposer.
+
+Trois garde-fous, du plus tôt au plus tard
+------------------------------------------
+1. :func:`~mazes.budget.fits_generation` et :func:`~mazes.budget.fits_solving`
+   refusent un calcul hors budget **avant la moindre allocation**. Kruskal
+   construit la liste de toutes ses arêtes -- à ``n = 100000`` cela fait ~2 Tio
+   -- et A* a besoin de ~112 Gio. Partir quand même tue le processus en
+   ``MemoryError``, parfois après plusieurs heures de calcul.
+2. :class:`~mazes.rendering.ExportPolicy` décide ce qui tient sur le disque :
+   au-delà de 8000 caractères de côté, l'ASCII 1:1 n'est **pas** écrit -- à
+   ``n = 100000`` il ferait ~37 Gio -- et l'image est réduite pour rester sous
+   la limite JPEG.
+3. :func:`~mazes.interaction.should_write` demande son accord à l'utilisateur
+   au-delà de ``CONFIRM_THRESHOLD_BYTES`` (256 Mio).
+
+Quand quelque chose est refusé, un **fichier de statistiques** prend le relais :
+la génération laisse une trace exploitable au lieu de ne rien produire.
 """
 
 from __future__ import annotations
@@ -11,18 +28,42 @@ from __future__ import annotations
 import argparse
 import contextlib
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
-from mazes.core.grid import entry_cell, exit_cell
+from mazes.budget import (
+    BUDGET_ENV_VAR,
+    estimate_generation,
+    estimate_solving,
+    fits_generation,
+    fits_solving,
+    memory_budget,
+)
+from mazes.core.grid import WallGrid, entry_cell, exit_cell
 from mazes.core.rng import RandomSource
 from mazes.core.validation import is_perfect, validate_path
 from mazes.generators import available_generators, generator_choices, get_generator
-from mazes.rendering import read_ascii, render_to_string, write_ascii, write_image
+from mazes.interaction import should_write
+from mazes.rendering import (
+    ExportPlan,
+    ExportPolicy,
+    format_bytes,
+    read_ascii,
+    render_to_string,
+    write_ascii,
+    write_image,
+    write_refused,
+    write_stats,
+)
 from mazes.solvers import available_solvers, get_solver, solver_choices
+from mazes.solvers.base import SolveResult
 
 OUTPUTS = Path("outputs")
 
 
+# --------------------------------------------------------------------------- #
+# Chemins et politique
+# --------------------------------------------------------------------------- #
 def _sortie(chemin: str | None, defaut: str) -> Path:
     if chemin:
         p = Path(chemin)
@@ -33,15 +74,236 @@ def _sortie(chemin: str | None, defaut: str) -> Path:
     return p
 
 
-def _ecrire_resultat(grille, resultat, base: Path) -> Path:
-    """Écrit le labyrinthe résolu en ASCII (``.txt``) et en image JPEG (``.jpg``)."""
+def _politique_export() -> ExportPolicy:
+    """Fabrique la politique d'export.
+
+    Passe par une fonction au lieu d'appeler ``ExportPolicy()`` en direct : c'est
+    le seul point où les tests peuvent injecter des limites basses. Sans lui,
+    vérifier qu'un refus se produit demanderait d'écrire des fichiers de
+    plusieurs gigaoctets.
+    """
+    return ExportPolicy()
+
+
+def _chemin_statistiques(base: Path) -> Path:
+    """``outputs/x.txt`` -> ``outputs/x_statistiques.txt``."""
+    return base.with_name(f"{base.stem}_statistiques.txt")
+
+
+# --------------------------------------------------------------------------- #
+# Écriture sous confirmation
+# --------------------------------------------------------------------------- #
+def _ecrire_si_autorise(
+    chemin: Path,
+    octets: int,
+    quoi: str,
+    ecrire: Callable[[Path], object],
+    *,
+    force: bool,
+    stats_only: bool,
+) -> Path | None:
+    """Écrit ``chemin`` après confirmation. ``None`` si l'écriture est refusée.
+
+    On n'arrive ici que pour un fichier que la politique **autorise**. Un verdict
+    ``None`` -- aucun terminal joignable -- suit donc cette décision et écrit :
+    sinon, un script sans console ne produirait plus rien alors que la
+    dimension du fichier ne posait aucun problème.
+    """
+    verdict = should_write(
+        octets,
+        f"Le fichier {quoi} {chemin.name} pèsera {format_bytes(octets)}. "
+        f"Souhaites-tu l'enregistrer ?",
+        force=force,
+        stats_only=stats_only,
+    )
+    if verdict is None or verdict:
+        ecrire(chemin)
+        return chemin
+
+    print(f"{quoi} non enregistré ({format_bytes(octets)}).", file=sys.stderr)
+    return None
+
+
+def _signaler_refus_ascii(plan: ExportPlan) -> None:
+    """Explique un refus décidé par la politique, sans qu'aucune question soit posée."""
+    print(
+        f"ASCII non écrit : {plan.reason}",
+        file=sys.stderr,
+    )
+
+
+def _refuser_calcul(
+    *,
+    etiquette: str,
+    phase: str,
+    quoi: str,
+    algorithme: str,
+    n: int,
+    base: Path,
+    cout: int,
+    alternatives: list[str],
+) -> int:
+    """Refuse un calcul hors budget et écrit les statistiques à la place.
+
+    Même règle que pour l'export : quand la sortie demandée est hors de portée,
+    un fichier de statistiques prend le relais. Laisser partir le calcul
+    donnerait un ``MemoryError`` en cours de route -- ni message utile, ni trace,
+    et parfois après plusieurs minutes d'attente.
+
+    Le code de retour est ``1``, contrairement au refus d'export : ici le
+    labyrinthe demandé n'existe pas du tout, et un script doit pouvoir le voir.
+
+    ``etiquette`` porte les accents du message console, ``phase`` la clé écrite
+    dans le fichier de statistiques -- lequel est encodé en **ASCII strict**. Les
+    confondre fait planter l'écriture sur le « é » de « Résolution ».
+    """
+    budget = memory_budget()
+
+    print(
+        f"{etiquette} refusée : {algorithme} demanderait {format_bytes(cout)} "
+        f"pour n={n}, au-delà du budget de {format_bytes(budget)}.",
+        file=sys.stderr,
+    )
+
+    # Ne conseiller que ce qui marche : quand c'est prim qui echoue, dire
+    # « essayez prim, le plus sobre » serait une plaisanterie.
+    piste = (
+        f"Essayer un {quoi} plus sobre : {', '.join(alternatives)}."
+        if alternatives
+        else f"Aucun {quoi} ne passe a cette taille."
+    )
+    print(f"{piste} Relever {BUDGET_ENV_VAR}, ou reduire --n.", file=sys.stderr)
+
+    chemin = write_refused(
+        n,
+        _chemin_statistiques(base),
+        phase=phase.lower(),
+        raison=(
+            f"{algorithme} demanderait {format_bytes(cout)} pour {n * n} cellules "
+            f"(budget {format_bytes(budget)})"
+        ),
+    )
+    print(f"statistiques : {chemin}", file=sys.stderr)
+    return 1
+
+
+def _refuser_generation(generateur: str, n: int, base: Path) -> int:
+    """Refus d'une génération : le labyrinthe lui-même n'a pas pu être construit."""
+    return _refuser_calcul(
+        etiquette="Génération",
+        phase="generation",
+        quoi="générateur",
+        algorithme=generateur,
+        n=n,
+        base=base,
+        cout=estimate_generation(generateur, n),
+        alternatives=sorted(
+            nom
+            for nom in generator_choices()
+            if nom != generateur and fits_generation(nom, n)
+        ),
+    )
+
+
+def _refuser_resolution(solveur: str, n: int, base: Path) -> int:
+    """Refus d'une résolution : le labyrinthe existe, mais pas de quoi le parcourir."""
+    return _refuser_calcul(
+        etiquette="Résolution",
+        phase="resolution",
+        quoi="solveur",
+        algorithme=solveur,
+        n=n,
+        base=base,
+        cout=estimate_solving(solveur, n),
+        alternatives=sorted(
+            nom for nom in solver_choices() if nom != solveur and fits_solving(nom, n)
+        ),
+    )
+
+
+def _ecrire_resultat(
+    grille: WallGrid,
+    resultat: SolveResult,
+    base: Path,
+    *,
+    plan: ExportPlan,
+    force: bool,
+    stats_only: bool,
+) -> tuple[Path | None, Path | None]:
+    """Écrit l'ASCII puis le JPEG, chacun sous confirmation.
+
+    Renvoie les deux chemins, ou ``None`` là où l'écriture n'a pas eu lieu --
+    refusée par la politique ou par l'utilisateur. L'appelant en déduit s'il doit
+    écrire un fichier de statistiques.
+    """
     txt = base.with_suffix(".txt")
-    write_ascii(grille, txt, state=resultat.state)
+    if plan.ascii_full:
+        ascii_ecrit = _ecrire_si_autorise(
+            txt,
+            plan.ascii_bytes,
+            "ASCII",
+            lambda chemin: write_ascii(grille, chemin, state=resultat.state),
+            force=force,
+            stats_only=stats_only,
+        )
+    else:
+        # La politique refuse, ou ne sait produire qu'un ASCII réduit -- que
+        # ``write_ascii`` ne sait pas écrire (pas de paramètre d'échelle).
+        _signaler_refus_ascii(plan)
+        ascii_ecrit = None
+
     jpg = base.with_suffix(".jpg")
-    write_image(grille, jpg, state=resultat.state)
-    return jpg
+    image_ecrite = _ecrire_si_autorise(
+        jpg,
+        plan.image_bytes,
+        "image",
+        lambda chemin: write_image(
+            grille, chemin, state=resultat.state, scale=plan.image_scale
+        ),
+        force=force,
+        stats_only=stats_only,
+    )
+    return ascii_ecrit, image_ecrite
 
 
+def _ecrire_statistiques(
+    grille: WallGrid,
+    base: Path,
+    plan: ExportPlan,
+    *,
+    resultat: SolveResult | None = None,
+    ascii_ecrit: bool,
+) -> Path:
+    """Écrit le fichier de statistiques et l'annonce."""
+    chemin = write_stats(
+        grille,
+        _chemin_statistiques(base),
+        plan,
+        result=resultat,
+        ascii_ecrit=ascii_ecrit,
+    )
+    print(f"statistiques : {chemin}", file=sys.stderr)
+    return chemin
+
+
+def _ajouter_options_ecriture(parser: argparse.ArgumentParser) -> None:
+    """Drapeaux communs de contrôle de l'écriture, sur toutes les sous-commandes."""
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="enregistrer sans demander confirmation",
+    )
+    parser.add_argument(
+        "--stats-only",
+        action="store_true",
+        help="n'écrire que le fichier de statistiques, aucune sortie lourde",
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Sous-commandes
+# --------------------------------------------------------------------------- #
 def cmd_list(args: argparse.Namespace) -> int:
     print("Générateurs :")
     for nom, cls in available_generators().items():
@@ -56,15 +318,42 @@ def cmd_list(args: argparse.Namespace) -> int:
 def cmd_generate(args: argparse.Namespace) -> int:
     rng = RandomSource(args.seed)
     generateur = get_generator(args.algorithm)
+    sortie = _sortie(args.output, f"maze_{args.algorithm}_{args.n}.txt")
+
+    # Avant toute allocation : Kruskal a besoin de la liste complete de ses
+    # aretes, et partir quand meme tuerait le processus en MemoryError.
+    if not fits_generation(args.algorithm, args.n):
+        return _refuser_generation(args.algorithm, args.n, sortie)
+
     grille = generateur.generate(args.n, rng)
 
     if args.check and not is_perfect(grille):
         print("ERREUR : le labyrinthe produit n'est pas parfait", file=sys.stderr)
         return 1
 
-    sortie = _sortie(args.output, f"maze_{args.algorithm}_{args.n}.txt")
-    write_ascii(grille, sortie)
-    print(f"généré avec {args.algorithm} (seed {rng.seed}) — écrit dans {sortie}", file=sys.stderr)
+    plan = _politique_export().plan(grille.n)
+
+    if plan.ascii_full:
+        ascii_ecrit = _ecrire_si_autorise(
+            sortie,
+            plan.ascii_bytes,
+            "ASCII",
+            lambda chemin: write_ascii(grille, chemin),
+            force=args.yes,
+            stats_only=args.stats_only,
+        )
+    else:
+        _signaler_refus_ascii(plan)
+        ascii_ecrit = None
+
+    if ascii_ecrit is not None:
+        print(
+            f"généré avec {args.algorithm} (seed {rng.seed}) — écrit dans {sortie}",
+            file=sys.stderr,
+        )
+
+    if plan.write_stats or ascii_ecrit is None:
+        _ecrire_statistiques(grille, sortie, plan, ascii_ecrit=ascii_ecrit is not None)
 
     if args.print:
         print(render_to_string(grille))
@@ -74,6 +363,13 @@ def cmd_generate(args: argparse.Namespace) -> int:
 def cmd_solve(args: argparse.Namespace) -> int:
     grille = read_ascii(args.input)
     solveur = get_solver(args.algorithm)
+    base = _sortie(args.output, f"solved_{args.algorithm}_{grille.n}")
+
+    # La grille existe deja (relue du disque) : seule la resolution peut etre
+    # hors budget.
+    if not fits_solving(args.algorithm, grille.n):
+        return _refuser_resolution(args.algorithm, grille.n, base)
+
     start, goal = entry_cell(grille), exit_cell(grille)
     resultat = solveur.solve(grille, start, goal)
 
@@ -85,20 +381,40 @@ def cmd_solve(args: argparse.Namespace) -> int:
         print("Chemin invalide : " + "; ".join(problemes), file=sys.stderr)
         return 1
 
-    base = _sortie(args.output, f"solved_{args.algorithm}_{grille.n}")
-    jpg = _ecrire_resultat(grille, resultat, base)
+    plan = _politique_export().plan(grille.n)
+    txt, jpg = _ecrire_resultat(
+        grille, resultat, base, plan=plan, force=args.yes, stats_only=args.stats_only
+    )
+
     print(
         f"{args.algorithm} : chemin {resultat.path_length} cellules, "
         f"développées {resultat.expanded}, {resultat.elapsed_s * 1000:.1f} ms",
         file=sys.stderr,
     )
-    print(f"ASCII : {base.with_suffix('.txt')}", file=sys.stderr)
-    print(f"JPEG  : {jpg}", file=sys.stderr)
+
+    if plan.write_stats or txt is None or jpg is None:
+        _ecrire_statistiques(
+            grille, base, plan, resultat=resultat, ascii_ecrit=txt is not None
+        )
+
+    if txt is not None:
+        print(f"ASCII : {txt}", file=sys.stderr)
+    if jpg is not None:
+        print(f"JPEG  : {jpg}", file=sys.stderr)
     return 0
 
 
 def cmd_run(args: argparse.Namespace) -> int:
     rng = RandomSource(args.seed)
+    base = _sortie(args.output, f"{args.generator}_{args.solver}_{args.n}")
+
+    # Les deux phases sont verifiees avant la moindre allocation : generer
+    # pendant des heures pour refuser de resoudre ensuite serait absurde.
+    if not fits_generation(args.generator, args.n):
+        return _refuser_generation(args.generator, args.n, base)
+    if not fits_solving(args.solver, args.n):
+        return _refuser_resolution(args.solver, args.n, base)
+
     grille = get_generator(args.generator).generate(args.n, rng)
     solveur = get_solver(args.solver)
     start, goal = entry_cell(grille), exit_cell(grille)
@@ -108,14 +424,25 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("Aucun chemin trouvé.", file=sys.stderr)
         return 1
 
-    base = _sortie(args.output, f"{args.generator}_{args.solver}_{args.n}")
-    jpg = _ecrire_resultat(grille, resultat, base)
+    plan = _politique_export().plan(grille.n)
+    txt, jpg = _ecrire_resultat(
+        grille, resultat, base, plan=plan, force=args.yes, stats_only=args.stats_only
+    )
+
     print(
         f"généré avec {args.generator}, résolu avec {args.solver} (seed {rng.seed})",
         file=sys.stderr,
     )
-    print(f"ASCII : {base.with_suffix('.txt')}", file=sys.stderr)
-    print(f"JPEG  : {jpg}", file=sys.stderr)
+
+    if plan.write_stats or txt is None or jpg is None:
+        _ecrire_statistiques(
+            grille, base, plan, resultat=resultat, ascii_ecrit=txt is not None
+        )
+
+    if txt is not None:
+        print(f"ASCII : {txt}", file=sys.stderr)
+    if jpg is not None:
+        print(f"JPEG  : {jpg}", file=sys.stderr)
     return 0
 
 
@@ -123,14 +450,42 @@ def cmd_convert(args: argparse.Namespace) -> int:
     grille = read_ascii(args.input)
     sortie = Path(args.output)
     sortie.parent.mkdir(parents=True, exist_ok=True)
+    plan = _politique_export().plan(grille.n)
+
     if sortie.suffix.lower() in (".txt", ".md"):
-        write_ascii(grille, sortie)
+        if not plan.ascii_full:
+            _signaler_refus_ascii(plan)
+            _ecrire_statistiques(grille, sortie, plan, ascii_ecrit=False)
+            return 0
+        ecrit = _ecrire_si_autorise(
+            sortie,
+            plan.ascii_bytes,
+            "ASCII",
+            lambda chemin: write_ascii(grille, chemin),
+            force=args.yes,
+            stats_only=args.stats_only,
+        )
     else:
-        write_image(grille, sortie)
-    print(f"écrit dans {sortie}", file=sys.stderr)
+        ecrit = _ecrire_si_autorise(
+            sortie,
+            plan.image_bytes,
+            "image",
+            lambda chemin: write_image(grille, chemin, scale=plan.image_scale),
+            force=args.yes,
+            stats_only=args.stats_only,
+        )
+
+    if plan.write_stats or ecrit is None:
+        _ecrire_statistiques(grille, sortie, plan, ascii_ecrit=ecrit is not None)
+
+    if ecrit is not None:
+        print(f"écrit dans {ecrit}", file=sys.stderr)
     return 0
 
 
+# --------------------------------------------------------------------------- #
+# Analyse des arguments
+# --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
     noms_gen = generator_choices()
     noms_sol = solver_choices()
@@ -152,6 +507,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output", default=None, help="fichier ASCII de sortie")
     p.add_argument("--print", action="store_true", help="affiche le labyrinthe dans le terminal")
     p.add_argument("--check", action="store_true", help="vérifie que le labyrinthe est parfait")
+    _ajouter_options_ecriture(p)
     p.set_defaults(func=cmd_generate)
 
     p = sub.add_parser("solve", help="résout un labyrinthe (ASCII) et l'exporte en JPEG")
@@ -160,6 +516,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--algorithm", default=noms_sol[0], choices=noms_sol,
                    help="algorithme de résolution")
     p.add_argument("--output", default=None, help="fichier de sortie (sans extension)")
+    _ajouter_options_ecriture(p)
     p.set_defaults(func=cmd_solve)
 
     p = sub.add_parser("run", help="pipeline complet : générer -> résoudre -> JPEG")
@@ -170,17 +527,36 @@ def build_parser() -> argparse.ArgumentParser:
                    help="algorithme de résolution")
     p.add_argument("--seed", type=int, default=None, help="graine reproductible")
     p.add_argument("--output", default=None, help="fichier de sortie (sans extension)")
+    _ajouter_options_ecriture(p)
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("convert", help="convertit un labyrinthe ASCII en image")
     p.add_argument("--input", required=True)
     p.add_argument("--output", required=True)
+    _ajouter_options_ecriture(p)
     p.set_defaults(func=cmd_convert)
 
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Point d'entrée : exécute la sous-commande et renvoie un code de sortie.
+
+    Codes
+    -----
+    ``0`` succès -- y compris quand l'utilisateur refuse une écriture et que
+    seules les statistiques sont produites : répondre « non » est un choix, pas
+    une erreur. ``1`` échec métier (chemin absent, labyrinthe non parfait,
+    **génération ou résolution refusée faute de mémoire**). ``2`` erreur
+    d'entrée (fichier manquant, extension inconnue).
+
+    Le refus pour mémoire est un ``1``, contrairement au refus d'export : dans
+    le second cas le labyrinthe existe et c'est un fichier qui manque, dans le
+    premier il n'y a aucun labyrinthe du tout.
+
+    Une ligne de commande mal formée ne passe pas par ici : ``argparse`` sort en
+    ``SystemExit(2)`` avant l'appel de la sous-commande.
+    """
     # Forcer UTF-8 sur la console : sinon les accents français sortent en `�`
     # sous Windows (codepage cp1252/cp850 par défaut).
     for flux in (sys.stdout, sys.stderr):
