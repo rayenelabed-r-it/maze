@@ -1,99 +1,132 @@
-"""Tableau comparatif : temps, mémoire et efficacité des solveurs
-en fonction de la taille du labyrinthe.
+"""Compare les solveurs sur les labyrinthes déjà générés dans ``outputs/``.
 
-  python benchmarks/scaling.py --sizes 100 500 1000 --repeat 3
+Usage :
+    1. Générer des labyrinthes :  ``mazes generate --n 100 --algorithm kruskal``
+    2. Lancer l'analyse :         ``python benchmarks/scaling.py``
+    3. Lire le compte rendu :     ``outputs/benchmark.md``
+
+Chaque labyrinthe trouvé dans ``outputs/`` (fichier ``.txt``) est résolu par
+chaque solveur ; les métriques sont comparées, et le compte rendu est écrit en
+Markdown dans ``outputs/benchmark.md``.
 """
 
 from __future__ import annotations
 
-import argparse
-import csv
 import sys
 from pathlib import Path
 
-from mazes.core.rng import RandomSource
-from mazes.core.validation import shortest_path, validate_path
-from mazes.generators import available_generators, get_generator
-from mazes.metrics import measure
-from mazes.solvers import available_solvers, get_solver
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-COLONNES = [
-    "n", "generateur", "solveur", "temps_ms", "pic_kio",
-    "longueur", "optimal", "developpees", "atteintes", "pic_frontiere",
-]
+from mazes.core.grid import entry_cell, exit_cell
+from mazes.core.validation import validate_path
+from mazes.rendering import read_ascii
+from mazes.solvers import get_solver, solver_choices
+
+OUTPUTS = Path(__file__).resolve().parent.parent / "outputs"
 
 
-def mesurer(n: int, nom_gen: str, nom_sol: str, seed: int, repeat: int) -> dict:
-    rng = RandomSource(seed)
-    grille = get_generator(nom_gen).generate(n, rng)
-    solveur = get_solver(nom_sol)
-    start, goal = grille.entry, grille.goal
-
-    reference = len(shortest_path(grille, start, goal))
-
-    meilleur = None
-    mesure = None
-    for _ in range(repeat):
-        mesure = measure(lambda: solveur.solve(grille, start, goal))
-        resultat = mesure.result
-        if meilleur is None or resultat.elapsed_s < meilleur.elapsed_s:
-            meilleur = resultat
-
-    validate_path(grille, meilleur.path, start, goal)
-
-    return {
-        "n": n,
-        "generateur": nom_gen,
-        "solveur": nom_sol,
-        "temps_ms": round(meilleur.elapsed_s * 1000, 2),
-        "pic_kio": round(mesure.peak_kib, 1),
-        "longueur": meilleur.length,
-        "optimal": "oui" if meilleur.length == reference else "non",
-        "developpees": meilleur.expanded,
-        "atteintes": meilleur.explored,
-        "pic_frontiere": meilleur.max_frontier,
-    }
+def charger_mazes() -> list[Path]:
+    """Renvoie les labyrinthes ASCII de ``outputs/``, triés par nom."""
+    return sorted(OUTPUTS.glob("*.txt"))
 
 
-def afficher(lignes: list[dict]) -> None:
-    largeurs = {c: max(len(c), *(len(str(l[c])) for l in lignes)) for c in COLONNES}
-    entete = "  ".join(c.ljust(largeurs[c]) for c in COLONNES)
-    print(entete)
-    print("-" * len(entete))
-    for ligne in lignes:
-        print("  ".join(str(ligne[c]).ljust(largeurs[c]) for c in COLONNES))
+def analyser(chemin: Path) -> dict:
+    """Résout un labyrinthe avec chaque solveur et renvoie ses métriques."""
+    grille = read_ascii(chemin)
+    start, goal = entry_cell(grille), exit_cell(grille)
+
+    resultats = []
+    for nom in solver_choices():
+        resultat = get_solver(nom).solve(grille, start, goal)
+        problemes = validate_path(grille, resultat.path, start, goal)
+        resultats.append(
+            {
+                "solveur": nom,
+                "temps_ms": resultat.elapsed_s * 1000,
+                "developpees": resultat.expanded,
+                "frontiere": resultat.max_frontier,
+                "chemin": resultat.path_length,
+                "efficacite": resultat.efficiency,
+                "valide": not problemes,
+            }
+        )
+    return {"fichier": chemin.name, "n": grille.n, "resultats": resultats}
+
+
+def _verdict(analyse: dict) -> str:
+    """Résume, pour un labyrinthe, quel solveur gagne sur quel critère."""
+    res = analyse["resultats"]
+    rapide = min(res, key=lambda r: r["temps_ms"])
+    efficace = min(res, key=lambda r: r["developpees"])
+    leger = min(res, key=lambda r: r["frontiere"])
+    return (
+        f"- Plus rapide : **{rapide['solveur']}** ({rapide['temps_ms']:.2f} ms)\n"
+        f"- Plus efficace : **{efficace['solveur']}** "
+        f"({efficace['developpees']:,} cases développées)\n"
+        f"- Plus léger : **{leger['solveur']}** (frontière {leger['frontiere']:,})"
+    )
+
+
+def rendre_markdown(analyses: list[dict]) -> str:
+    """Construit le compte rendu Markdown."""
+    lignes = ["# Benchmark des solveurs", ""]
+    lignes.append(
+        f"{len(analyses)} labyrinthe(s) analysé(s) avec {len(solver_choices())} "
+        f"solveur(s) : {', '.join(solver_choices())}."
+    )
+    lignes.append("")
+
+    for analyse in analyses:
+        lignes.append(f"## {analyse['fichier']}  ({analyse['n']} x {analyse['n']})")
+        lignes.append("")
+        lignes.append(
+            "| Solveur | Temps (ms) | Cases développées | Frontière | Chemin | Efficacité |"
+        )
+        lignes.append("|---|---:|---:|---:|---:|---:|")
+        for r in analyse["resultats"]:
+            marque = " ✅" if r["valide"] else " ❌"
+            lignes.append(
+                f"| {r['solveur']}{marque} | {r['temps_ms']:.2f} | {r['developpees']:,} "
+                f"| {r['frontiere']:,} | {r['chemin']:,} | {r['efficacite']:.3f} |"
+            )
+        lignes.append("")
+        lignes.append(_verdict(analyse))
+        lignes.append("")
+
+    # Bilan : qui gagne le plus souvent, tous labyrinthes confondus.
+    victoires = {nom: {"rapide": 0, "efficace": 0, "leger": 0} for nom in solver_choices()}
+    for analyse in analyses:
+        res = analyse["resultats"]
+        victoires[min(res, key=lambda r: r["temps_ms"])["solveur"]]["rapide"] += 1
+        victoires[min(res, key=lambda r: r["developpees"])["solveur"]]["efficace"] += 1
+        victoires[min(res, key=lambda r: r["frontiere"])["solveur"]]["leger"] += 1
+
+    lignes.append("## Bilan")
+    lignes.append("")
+    lignes.append("| Solveur | Victoires « rapide » | Victoires « efficace » | Victoires « léger » |")
+    lignes.append("|---|---:|---:|---:|")
+    for nom in solver_choices():
+        v = victoires[nom]
+        lignes.append(f"| {nom} | {v['rapide']} | {v['efficace']} | {v['leger']} |")
+    lignes.append("")
+
+    return "\n".join(lignes) + "\n"
 
 
 def main(argv: list[str] | None = None) -> int:
-    noms_gen = [c.name for c in available_generators()]
-    noms_sol = [c.name for c in available_solvers()]
+    chemins = charger_mazes()
+    if not chemins:
+        print(
+            "Aucun labyrinthe dans outputs/. Générez-en d'abord : "
+            "mazes generate --n 100 --algorithm kruskal",
+            file=sys.stderr,
+        )
+        return 1
 
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sizes", type=int, nargs="+", default=[50, 100, 200])
-    parser.add_argument("--generators", nargs="+", default=noms_gen, choices=noms_gen)
-    parser.add_argument("--solvers", nargs="+", default=noms_sol, choices=noms_sol)
-    parser.add_argument("--seed", type=int, default=1234)
-    parser.add_argument("--repeat", type=int, default=1, help="on garde le meilleur temps")
-    parser.add_argument("--csv", default=None, help="fichier CSV de sortie")
-    args = parser.parse_args(argv)
-
-    lignes = []
-    for n in args.sizes:
-        for nom_gen in args.generators:
-            for nom_sol in args.solvers:
-                print(f"... n={n} {nom_gen}/{nom_sol}", file=sys.stderr)
-                lignes.append(mesurer(n, nom_gen, nom_sol, args.seed, args.repeat))
-
-    afficher(lignes)
-
-    if args.csv:
-        chemin = Path(args.csv)
-        chemin.parent.mkdir(parents=True, exist_ok=True)
-        with chemin.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=COLONNES)
-            writer.writeheader()
-            writer.writerows(lignes)
-        print(f"CSV écrit dans {chemin}", file=sys.stderr)
+    analyses = [analyser(c) for c in chemins]
+    sortie = OUTPUTS / "benchmark.md"
+    sortie.write_text(rendre_markdown(analyses), encoding="utf-8")
+    print(f"Compte rendu écrit dans {sortie}")
     return 0
 
 

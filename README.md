@@ -1,110 +1,218 @@
 # Amazing-Mazes
 
-Génération et résolution de labyrinthes **parfaits** (connexes, sans cycle),
-en Python, avec rendu ASCII et image, une CLI et un banc de mesure.
+Génération et résolution de **labyrinthes parfaits**, avec comparaison des
+algorithmes.
+
+Un labyrinthe *parfait* est un labyrinthe sans boucle : il existe exactement un
+chemin entre deux cases libres quelconques. Mathématiquement, c'est un **arbre
+couvrant** de la grille de cellules.
+
+---
+
+## La question du projet
+
+> **Quel algorithme est le plus rapide, le plus efficace et le plus léger, pour
+> chaque taille de labyrinthe ?**
+
+Tout le reste est un moyen. La réponse est un tableau, et le protocole pour
+l'obtenir est dans [`doc/README.md`](doc/README.md).
+
+## Périmètre
+
+| Rôle | Algorithmes | Qui |
+|---|---|---|
+| **Générateurs** | Recursive Backtracking | Angie |
+| **Générateurs** | Kruskal, Prim | Rayene |
+| **Solveurs** | Recursive Backtracking, A\* | Manon |
+| **Solveurs** | Dijkstra | Rayene |
+| **Lecture ASCII** | fichier texte → `WallGrid` | Manon |
+
+Générateurs et solveurs passent par la même interface : ajouter un algorithme,
+c'est créer une classe et l'enregistrer, sans toucher au reste.
+
+## Cahier des charges
+
+- Entrée : un entier naturel `n`, le **nombre de couloirs par côté**.
+- Le labyrinthe est **carré**, de `n × n` couloirs.
+- **Entrée** en haut à gauche, **sortie** en bas à droite.
+- Représentation ASCII : `#` pour les murs, `.` pour les espaces libres.
+- Résolution : `o` pour le chemin, `*` pour les cases explorées qui n'en font pas
+  partie.
+- Sortie : un fichier contenant le labyrinthe **et** son parcours, puis une image
+  **JPEG**.
+
+### Ce que « `n` couloirs par côté » implique
+
+La grille ASCII fait `(2n+1) × (2n+1)` caractères :
+
+| `n` | Grille ASCII | Fichier | Réalisable ? |
+|---:|---:|---:|:---|
+| 1 000 | 2 001 × 2 001 | ~4 Mo | oui |
+| 10 000 | 20 001 × 20 001 | ~400 Mo | oui, lent |
+| 100 000 | 200 001 × 200 001 | ~40 Go | **non** |
+
+Deux verrous : le disque, et le format JPEG (plafonné à 65 535 px de côté).
+
+L'architecture répond en **séparant le stockage du rendu** : le labyrinthe vit en
+mémoire à 2 bits par cellule (`n²/4` octets, soit 2,5 Go à `n = 100000`), et
+l'export est une projection décidée par une `ExportPolicy`.
+
+> Deux axes à ne pas confondre. `n = 100000` **passe l'échelle en mémoire** (2,5 Go),
+> mais **pas en temps** : environ `10¹⁰` cellules à parcourir, soit des heures de
+> calcul en Python pur. Voir [`doc/README.md`](doc/README.md).
+
+---
 
 ## Installation
 
 ```bash
-python -m venv .venv && source .venv/bin/activate   # Windows : .venv\Scripts\activate
 pip install -r requirements-dev.txt
 pip install -e .
 ```
 
-Python 3.10 minimum. Pillow n'est nécessaire que pour le rendu image ;
-tout le reste fonctionne sans.
-
 ## Utilisation
 
+La consigne décrit un **pipeline en trois temps** : générer le labyrinthe avec
+l'algorithme choisi, **le résoudre** avec l'algorithme choisi, puis **l'exporter
+en JPEG**.
+
+### Lister les algorithmes disponibles
+
 ```bash
-mazes list                                   # algorithmes disponibles
-mazes generate --n 20 --algorithm kruskal --seed 42 --check
-mazes generate --n 500 --algorithm prim --image
-mazes solve --n 20 --algorithm astar --seed 42
-mazes solve --input outputs/maze_kruskal_20.txt --algorithm dijkstra --image
-mazes convert --input outputs/maze_kruskal_20.txt --output outputs/maze.png
+mazes list
 ```
 
-- `--seed` rend la génération **reproductible** : même graine, même labyrinthe.
-- `--check` vérifie que le labyrinthe produit est bien parfait.
-- Au-delà de n = 60, l'affichage terminal est remplacé par l'écriture d'un
-  fichier dans `outputs/` (voir `rendering/policy.py`).
+Affiche les **générateurs** (`kruskal`, `prim`, `recursive_backtracking`) et les
+**solveurs** (`astar`, `dijkstra`, `recursive_backtracking`), avec leur description
+et leur complexité.
 
-## Format ASCII
+### 1. Générer un labyrinthe
 
-Grille de `2n+1` x `2n+1` caractères :
+Générer un labyrinthe de 30 × 30 couloirs avec l'algorithme **Kruskal** :
 
-| caractère | sens |
+```bash
+mazes generate --n 30 --algorithm kruskal
+```
+
+Générer un labyrinthe avec l'algorithme **Recursive Backtracking** :
+
+```bash
+mazes generate --n 30 --algorithm recursive_backtracking
+```
+
+Générer un labyrinthe avec l'algorithme **Prim** :
+
+```bash
+mazes generate --n 30 --algorithm prim
+```
+
+Le labyrinthe est écrit en ASCII dans `outputs/maze_<algorithme>_<n>.txt`
+(par exemple `outputs/maze_kruskal_30.txt`).
+
+Options de `generate` :
+
+| Option | Effet |
 |---|---|
-| `#` | mur |
-| (espace) | couloir |
-| `*` | cellule explorée par le solveur |
-| `o` | cellule du chemin solution |
+| `--output fichier.txt` | choisir le fichier de sortie |
+| `--print` | afficher le labyrinthe dans le terminal |
+| `--check` | vérifier que le labyrinthe est parfait avant de l'écrire |
+| `--seed 42` | graine reproductible (génère toujours le même labyrinthe) |
 
-L'entrée est percée au-dessus de la cellule `(0,0)`, la sortie sous
-`(n-1, n-1)`. Un fichier écrit par `generate` peut être relu tel quel par
-`solve --input`, marques `*` / `o` comprises (elles sont ignorées à la relecture).
+### 2. Résoudre un labyrinthe (généré au préalable)
 
-## Algorithmes
-
-### Générateurs
-
-| nom | principe | complexité |
-|---|---|---|
-| `kruskal` | mélange de tous les murs, Union-Find pour éviter les cycles | ~O(n²) |
-| `prim` | croissance depuis une cellule, tirage dans la frontière | O(n²) |
-| `recursive_backtracking` | parcours en profondeur avec retour sur trace | O(n²) |
-
-### Solveurs
-
-| nom | principe | optimal |
-|---|---|---|
-| `astar` | A* + heuristique de Manhattan | oui |
-| `dijkstra` | file de priorité, coût uniforme | oui |
-| `recursive_backtracking` | profondeur avec retour sur trace | non garanti |
-
-Dans un labyrinthe parfait il n'existe qu'**un seul** chemin simple entre deux
-cellules : les trois solveurs renvoient donc la même longueur. La différence se
-joue sur le nombre de cellules développées et sur la mémoire — c'est ce que
-mesure le banc.
-
-## Tests et mesures
+Résoudre le labyrinthe généré ci-dessus avec l'algorithme **A\*** :
 
 ```bash
-pytest
-python benchmarks/scaling.py --sizes 100 500 --repeat 3 --csv outputs/scaling.csv
+mazes solve --input outputs/maze_kruskal_30.txt --algorithm astar
 ```
 
-Le banc produit, pour chaque couple générateur/solveur : temps, pic mémoire,
-longueur du chemin, cellules développées et atteintes, pic de la frontière.
-Chaque chemin est revalidé contre un BFS de référence (`core/validation.py`)
-qui ne partage aucun code avec les solveurs.
+Résoudre avec l'algorithme **Recursive Backtracking** :
 
-## Organisation
+```bash
+mazes solve --input outputs/maze_kruskal_30.txt --algorithm recursive_backtracking
+```
 
-Voir `doc/01-architecture.md`. En résumé : les dépendances vont de la
-périphérie vers le cœur, `core/` n'importe rien du projet, et tous les modules
-communiquent via `WallGrid`. Un algorithme s'ajoute en créant un fichier dans
-`generators/` ou `solvers/` avec le décorateur `@register_generator` /
-`@register_solver` : il apparaît aussitôt dans la CLI, les tests et le banc,
-sans modifier aucun autre fichier.
+Cette commande écrit **deux fichiers** :
 
-## Ce qui a changé depuis les prototypes
+- le labyrinthe **et** son parcours en ASCII (`o` = chemin, `*` = cases
+  explorées) : `outputs/solved_<solveur>_<n>.txt` ;
+- l'image **JPEG** du parcours : `outputs/solved_<solveur>_<n>.jpg`.
 
-Le code d'origine (Kruskal, Prim, Dijkstra, rendu Pillow) a été repris et
-corrigé sur les points suivants :
+Options de `solve` :
 
-- **Mémoire.** Les passages étaient stockés dans un `set` de tuples et le
-  graphe d'adjacence reconstruit à chaque résolution. `WallGrid` utilise
-  2 bits par cellule (250 Ko à n = 1000) et les voisins sont calculés à la volée.
-- **Reproductibilité.** `random` global remplacé par `RandomSource(seed)`.
-- **Robustesse de Dijkstra.** La reconstruction du chemin plantait par
-  `KeyError` si l'arrivée était inatteignable ; elle renvoie maintenant un
-  chemin vide, signalé proprement par la CLI.
-- **Union-Find.** Ajout de l'union par rang en plus de la compression de chemin.
-- **Prim.** `pop(index)` en O(k) remplacé par un échange-puis-pop en O(1).
-- **Rendu image.** Un trait Pillow par mur (~2n² appels) remplacé par un
-  remplissage par cellule, avec une politique d'export qui borne la taille.
-- **Effets de bord.** Les scripts s'exécutaient au moment de l'import
-  (génération et affichage d'un 100x100 en fin de fichier) ; tout passe
-  désormais par la CLI.
+| Option | Effet |
+|---|---|
+| `--input labyrinthe.txt` | labyrinthe ASCII à résoudre |
+| `--algorithm astar` | algorithme de résolution |
+| `--output fichier` | choisir le nom de sortie (sans extension) |
+
+### 3. Pipeline complet en une commande
+
+Générer avec **Kruskal** puis résoudre avec **A\*** en une seule commande :
+
+```bash
+mazes run --n 30 --generator kruskal --solver astar
+```
+
+Les **deux** algorithmes sont explicites ici : `--generator` choisit l'algorithme
+de génération, `--solver` l'algorithme de résolution. La commande produit les
+mêmes deux fichiers (ASCII + JPEG), nommés `outputs/<générateur>_<solveur>_<n>`.
+
+### Convertir un labyrinthe ASCII en image
+
+Convertir un fichier ASCII en image **JPEG** :
+
+```bash
+mazes convert --input outputs/maze_kruskal_30.txt --output outputs/maze_kruskal_30.jpg
+```
+
+### Comparer et analyser les solveurs
+
+Le benchmark résout tous les labyrinthes déjà générés dans `outputs/` et écrit un
+compte rendu lisible dans `outputs/benchmark.md` :
+
+```bash
+python benchmarks/scaling.py
+```
+
+---
+
+## Tests
+
+```bash
+pytest                    # suite complète
+pytest -k masque          # un seul groupe
+pytest -k solveur -x      # s'arrêter au premier échec
+pytest --cov=mazes        # avec couverture
+```
+
+---
+
+## Structure
+
+```
+Amazing-Mazes/
+├── src/mazes/
+│   ├── core/                 WallGrid, Union-Find, aléatoire, validation
+│   ├── generators/           Recursive Backtracking, Kruskal, Prim
+│   ├── solvers/              Recursive Backtracking, A*
+│   ├── rendering/            ASCII, image, politique d'export
+│   ├── metrics.py            chronométrage, mesure mémoire
+│   └── cli.py                ligne de commande
+├── tests/                    test_solvers.py, test_generators.py, test_cli.py,
+│                             test_lecture_ascii.py, test_rendering.py
+├── benchmarks/scaling.py     le tableau comparatif
+├── doc/
+└── outputs/                  fichiers produits (non versionnés)
+```
+
+## Documentation
+
+| Document | Contenu |
+|---|---|
+| [README](doc/README.md) | la question du projet, le protocole de mesure |
+| [01 — Architecture](doc/01-architecture.md) | organisation du code, interfaces |
+| [02 — La grille](doc/02-grille.md) | modèle 2 bits/cellule, lecture ASCII |
+| [03 — Générateurs](doc/03-generateurs.md) | théorie de Recursive Backtracking et Kruskal |
+| [04 — Solveurs](doc/04-solveurs.md) | théorie de backtracking, A\* et Dijkstra, marquage `o` / `*` |
+| [05 — Export](doc/05-export.md) | écrire en ASCII et en image |

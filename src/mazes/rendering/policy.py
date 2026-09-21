@@ -1,37 +1,178 @@
-"""ExportPolicy : ce qu'on s'autorise à écrire, et à quelle taille.
+"""Politique d'export : que peut-on raisonnablement écrire sur le disque ?
 
-Sans garde-fou, `mazes generate --n 5000 --image` produit une image de
-plusieurs gigaoctets ou remplit le terminal de 10 001 lignes. La politique
-décide à la place de l'utilisateur, et explique son choix.
+L'export 1:1 devient impossible au-delà d'un seuil (disque et limite JPEG). Une
+:class:`ExportPolicy` décide, avant le calcul, ce qui sera écrit : ASCII complet,
+image réduite, ou fichier de statistiques seul. Voir ``doc/05-export.md``.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
+#: Cote maximal, en caractères, d'un export ASCII 1:1.
+MAX_ASCII_SIDE = 8_000
 
-@dataclass(frozen=True)
+#: Cote maximal, en pixels, d'une image exportée (sous la limite JPEG de 65 535).
+MAX_IMAGE_SIDE = 32_768
+
+#: Au-delà de ce côté, un fichier de statistiques est toujours écrit.
+STATS_ALWAYS_ABOVE = 2_000
+
+
+@dataclass(frozen=True, slots=True)
+class ExportPlan:
+    """Ce qui sera effectivement écrit pour un labyrinthe de taille ``n``."""
+
+    n: int
+    grid_side: int
+    ascii_full: bool
+    ascii_scale: int
+    image_scale: int
+    write_stats: bool
+    ascii_bytes: int
+    reason: str
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def projected_ascii_side(self) -> int:
+        """Cote de la grille ASCII après sous-échantillonnage."""
+        return self.grid_side // self.ascii_scale
+
+    @property
+    def projected_image_side(self) -> int:
+        """Cote de l'image après sous-échantillonnage."""
+        return self.grid_side // self.image_scale
+
+    @property
+    def is_degraded(self) -> bool:
+        """``True`` si l'export n'est pas fidèle à l'échelle 1:1."""
+        return self.ascii_scale > 1 or self.image_scale > 1
+
+    def describe(self) -> str:
+        """Résumé multi-lignes de la décision, pour l'affichage console."""
+        lignes = [
+            "  Export ASCII 1:1  : "
+            + (
+                "oui"
+                if self.ascii_full
+                else f"non -- reduit x{self.ascii_scale} ({self.projected_ascii_side} caracteres)"
+            ),
+            "  Export image      : "
+            + (
+                "pleine resolution"
+                if self.image_scale == 1
+                else f"reduite x{self.image_scale} -> {self.projected_image_side} pixels"
+            ),
+            f"  Statistiques      : {'oui' if self.write_stats else 'non'}",
+        ]
+        lignes.append(f"  {self.reason}")
+        if self.warnings:
+            lignes.extend(f"  ! {avertissement}" for avertissement in self.warnings)
+        return "\n".join(lignes)
+
+
 class ExportPolicy:
-    max_ascii_print: int = 60        # au-delà, on écrit un fichier plutôt qu'afficher
-    max_image_pixels: int = 12_000   # côté max de l'image produite
-    min_cell_size: int = 1
+    """Décide de la forme des sorties en fonction de la taille du labyrinthe."""
 
-    def should_print(self, n: int) -> bool:
-        return n <= self.max_ascii_print
+    __slots__ = ("ascii_subsample", "max_ascii_side", "max_image_side")
 
-    def cell_size(self, n: int, demande: int | None = None) -> int:
-        """Taille de cellule tenant dans la limite de pixels."""
-        taille = demande if demande is not None else max(1, 800 // max(n, 1))
-        while taille > self.min_cell_size and n * (taille + 1) + 1 > self.max_image_pixels:
-            taille -= 1
-        return max(self.min_cell_size, taille)
+    def __init__(
+        self,
+        max_ascii_side: int = MAX_ASCII_SIDE,
+        max_image_side: int = MAX_IMAGE_SIDE,
+        ascii_subsample: bool = False,
+    ) -> None:
+        if max_ascii_side < 3:
+            raise ValueError("max_ascii_side doit etre >= 3")
+        if max_image_side < 3:
+            raise ValueError("max_image_side doit etre >= 3")
+        self.max_ascii_side = max_ascii_side
+        self.max_image_side = max_image_side
+        self.ascii_subsample = ascii_subsample
 
-    def explain(self, n: int) -> str:
-        if self.should_print(n):
-            return f"n = {n} : affichage direct possible."
+    def plan(self, n: int) -> ExportPlan:
+        """Calcule ce qui peut être écrit pour ``n`` couloirs par côté."""
+        if n < 1:
+            raise ValueError(f"n doit etre >= 1, recu {n}")
+
+        cote = 2 * n + 1
+        avertissements: list[str] = []
+
+        if cote <= self.max_ascii_side:
+            ascii_complet = True
+            echelle_ascii = 1
+        elif self.ascii_subsample:
+            ascii_complet = False
+            echelle_ascii = subsample_factor(cote, self.max_ascii_side)
+            avertissements.append(
+                "l'ASCII est reduit : le fichier ne represente plus fidelement "
+                "le labyrinthe, chaque caractere couvrant plusieurs cellules"
+            )
+        else:
+            ascii_complet = False
+            echelle_ascii = subsample_factor(cote, self.max_ascii_side)
+
+        echelle_image = subsample_factor(cote, self.max_image_side)
+        octets_ascii = self.estimate_ascii_bytes(n, 1)
+
+        if ascii_complet:
+            raison = (
+                f"grille de {cote} x {cote} : l'ASCII 1:1 tient sous la limite "
+                f"de {self.max_ascii_side} caracteres"
+            )
+        else:
+            raison = (
+                f"ASCII 1:1 impossible : la grille ferait {cote} x {cote} "
+                f"caracteres, soit {octets_ascii / 1024**3:.1f} Gio "
+                f"(limite {self.max_ascii_side} de cote)"
+            )
+            if not self.ascii_subsample:
+                raison += " -- ASCII refuse plutot que reduit"
+
+        if echelle_image > 1:
+            avertissements.append(
+                f"l'image est reduite x{echelle_image} : cote "
+                f"{cote // echelle_image} au lieu de {cote}"
+            )
+
+        return ExportPlan(
+            n=n,
+            grid_side=cote,
+            ascii_full=ascii_complet,
+            ascii_scale=1 if ascii_complet else echelle_ascii,
+            image_scale=echelle_image,
+            write_stats=cote > STATS_ALWAYS_ABOVE,
+            ascii_bytes=octets_ascii,
+            reason=raison,
+            warnings=tuple(avertissements),
+        )
+
+    def ascii_is_feasible(self, n: int) -> bool:
+        """Indique si l'ASCII 1:1 tient sous la limite."""
+        return 2 * n + 1 <= self.max_ascii_side
+
+    def estimate_ascii_bytes(self, n: int, scale: int = 1) -> int:
+        """Taille estimée du fichier ASCII, en octets (retours à la ligne compris)."""
+        cote = (2 * n + 1) // max(1, scale)
+        return cote * (cote + 1)
+
+    def estimate_dense_bytes(self, n: int) -> int:
+        """Mémoire du tableau dense ``(2n+1)**2``, soit 16x la représentation compacte."""
+        cote = 2 * n + 1
+        return cote * cote
+
+    def __repr__(self) -> str:
         return (
-            f"n = {n} : {2 * n + 1} lignes à l'écran, on écrit un fichier à la place."
+            f"ExportPolicy(max_ascii_side={self.max_ascii_side}, "
+            f"max_image_side={self.max_image_side}, ascii_subsample={self.ascii_subsample})"
         )
 
 
-DEFAULT_POLICY = ExportPolicy()
+def subsample_factor(side: int, limit: int) -> int:
+    """Plus petit entier ``k`` tel que ``side // k <= limit`` (``1`` si déjà sous la limite)."""
+    if limit < 1:
+        raise ValueError("limit doit etre >= 1")
+    if side <= limit:
+        return 1
+    return math.ceil(side / limit)

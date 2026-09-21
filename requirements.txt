@@ -1,1 +1,11 @@
-pillow>=10.0
+# Dependances d'execution.
+# Python >= 3.11 requis (dataclasses, typing moderne, perf).
+
+# Tableaux compacts, packing de bits, memmap, vectorisation du rendu.
+numpy>=2.0,<3.0
+
+# Ecriture des images JPG/PNG a partir des tableaux numpy.
+Pillow>=10.4
+
+# Barres de progression pour les runs longs (benchmarks).
+tqdm>=4.66
